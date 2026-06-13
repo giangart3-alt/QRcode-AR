@@ -1,6 +1,6 @@
 "use client";
 
-import { upload } from "@vercel/blob/client";
+import { put } from "@vercel/blob/client";
 import QRCode from "qrcode";
 import { FormEvent, useMemo, useState } from "react";
 import Link from "next/link";
@@ -13,6 +13,17 @@ type UploadProgress = {
   percentage?: number;
 };
 
+type UploadStage = "idle" | "preparing" | "uploading" | "saving";
+
+type TokenResponse = {
+  type?: "blob.generate-client-token";
+  clientToken?: string;
+  error?: string;
+};
+
+const MAX_GLB_SIZE_BYTES = 500 * 1024 * 1024;
+const MULTIPART_THRESHOLD_BYTES = 8 * 1024 * 1024;
+
 export function AdminClient() {
   const [password, setPassword] = useState("");
   const [unlocked, setUnlocked] = useState(false);
@@ -22,9 +33,14 @@ export function AdminClient() {
   const [file, setFile] = useState<File | null>(null);
   const [progress, setProgress] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [uploadStage, setUploadStage] = useState<UploadStage>("idle");
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const [project, setProject] = useState<ProjectMetadata | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState("");
+
+  const working = busy || uploadStage !== "idle";
+  const uploadLabel = getUploadLabel(uploadStage, progress);
 
   const fileSize = useMemo(() => {
     if (!file) return "";
@@ -35,6 +51,7 @@ export function AdminClient() {
     event.preventDefault();
     setBusy(true);
     setError("");
+    setSuccess("");
 
     const response = await fetch("/api/admin/check", {
       method: "POST",
@@ -55,7 +72,9 @@ export function AdminClient() {
   async function createProject(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
+    setUploadStage("preparing");
     setError("");
+    setSuccess("");
     setProject(null);
     setQrDataUrl("");
     setProgress(0);
@@ -69,14 +88,31 @@ export function AdminClient() {
         throw new Error("Only .glb files are allowed.");
       }
 
+      if (file.size > MAX_GLB_SIZE_BYTES) {
+        throw new Error("Choose a GLB file that is 500 MB or smaller.");
+      }
+
+      const parsedScale = parseDecimalInput(scale, "Scale");
+      if (parsedScale.value <= 0) {
+        throw new Error("Scale must be greater than 0.");
+      }
+
+      const parsedVerticalOffset = parseDecimalInput(verticalOffset, "Vertical offset");
+      setScale(parsedScale.normalized);
+      setVerticalOffset(parsedVerticalOffset.normalized);
+
       const pendingName = name.trim() || file.name.replace(/\.glb$/i, "");
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
       const pathname = `models/${crypto.randomUUID()}-${safeName}`;
+      const multipart = file.size >= MULTIPART_THRESHOLD_BYTES;
+      const token = await requestBlobClientToken(pathname, password, multipart);
 
-      const blob = await upload(pathname, file, {
+      setUploadStage("uploading");
+      const blob = await put(pathname, file, {
         access: "public",
-        handleUploadUrl: "/api/blob/upload",
-        clientPayload: JSON.stringify({ password }),
+        token,
+        multipart,
+        contentType: getGlbContentType(file.type),
         onUploadProgress: (event: UploadProgress) => {
           if (typeof event.percentage === "number") {
             setProgress(Math.round(event.percentage));
@@ -89,14 +125,15 @@ export function AdminClient() {
         }
       });
 
+      setUploadStage("saving");
       const response = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           password,
           name: pendingName,
-          scale: Number(scale),
-          verticalOffset: Number(verticalOffset),
+          scale: parsedScale.value,
+          verticalOffset: parsedVerticalOffset.value,
           modelUrl: blob.url,
           modelPathname: blob.pathname,
           modelSize: file.size
@@ -115,33 +152,35 @@ export function AdminClient() {
       setProject(result.project);
       setQrDataUrl(await QRCode.toDataURL(result.project.arUrl, { margin: 1, width: 320 }));
       setProgress(100);
+      setSuccess("Project created. The AR page, fallback viewer, and QR code are ready.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to create project.");
     } finally {
       setBusy(false);
+      setUploadStage("idle");
     }
   }
 
   return (
-    <main className="min-h-screen px-5 py-6">
+    <main className="min-h-screen px-5 py-6 text-[var(--foreground)]">
       <div className="mx-auto max-w-5xl">
         <div className="mb-8 flex items-center justify-between border-b border-[var(--line)] pb-5">
-          <Link className="focus-ring rounded-md px-3 py-2 text-sm font-semibold hover:bg-white" href="/">
+          <Link className="focus-ring rounded-lg px-3 py-2 text-sm font-semibold text-[var(--muted)] transition hover:bg-white hover:text-[var(--ink)]" href="/">
             Home
           </Link>
-          <Link className="focus-ring rounded-md px-3 py-2 text-sm font-semibold hover:bg-white" href="/marker">
+          <Link className="focus-ring rounded-lg px-3 py-2 text-sm font-semibold text-[var(--muted)] transition hover:bg-white hover:text-[var(--ink)]" href="/marker">
             Marker
           </Link>
         </div>
 
-        <h1 className="text-4xl font-black tracking-tight">Admin</h1>
-        <p className="mt-3 max-w-2xl text-[var(--muted)]">
+        <h1 className="text-4xl font-black tracking-tight text-[var(--ink)]">Admin</h1>
+        <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--muted)]">
           Upload one GLB at a time. The file goes straight from this browser to Vercel Blob;
           the app only saves a small JSON project record after upload finishes.
         </p>
 
         {!unlocked ? (
-          <form onSubmit={unlock} className="mt-8 max-w-md rounded-md border border-[var(--line)] bg-[var(--panel)] p-5">
+          <form onSubmit={unlock} className="mt-8 max-w-md rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 shadow-sm">
             <label className="block text-sm font-semibold" htmlFor="password">
               Admin password
             </label>
@@ -150,58 +189,57 @@ export function AdminClient() {
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              className="focus-ring mt-2 w-full rounded-md border border-[var(--line)] bg-white px-3 py-3"
+              className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
               autoComplete="current-password"
             />
             <button
               type="submit"
               disabled={busy}
-              className="focus-ring mt-4 rounded-md bg-[var(--ink)] px-4 py-3 font-semibold text-white disabled:opacity-60"
+              className="focus-ring mt-4 rounded-lg bg-[var(--ink)] px-4 py-3 font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
             >
               {busy ? "Checking..." : "Unlock"}
             </button>
           </form>
         ) : (
           <div className="mt-8 grid gap-6 lg:grid-cols-[1fr_380px]">
-            <form onSubmit={createProject} className="rounded-md border border-[var(--line)] bg-[var(--panel)] p-5">
+            <form noValidate onSubmit={createProject} className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 shadow-sm">
               <div className="grid gap-5 md:grid-cols-2">
                 <label className="block text-sm font-semibold md:col-span-2">
                   Project/model name
                   <input
                     value={name}
                     onChange={(event) => setName(event.target.value)}
-                    className="focus-ring mt-2 w-full rounded-md border border-[var(--line)] bg-white px-3 py-3"
+                    className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
                     placeholder="Gallery sculpture"
                   />
                 </label>
                 <label className="block text-sm font-semibold">
                   Scale
                   <input
-                    type="number"
-                    step="0.05"
-                    min="0.01"
+                    type="text"
+                    inputMode="decimal"
                     value={scale}
                     onChange={(event) => setScale(event.target.value)}
-                    className="focus-ring mt-2 w-full rounded-md border border-[var(--line)] bg-white px-3 py-3"
+                    className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
                   />
                 </label>
                 <label className="block text-sm font-semibold">
                   Vertical offset
                   <input
-                    type="number"
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
                     value={verticalOffset}
                     onChange={(event) => setVerticalOffset(event.target.value)}
-                    className="focus-ring mt-2 w-full rounded-md border border-[var(--line)] bg-white px-3 py-3"
+                    className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
                   />
                 </label>
                 <label className="block text-sm font-semibold md:col-span-2">
                   GLB model
                   <input
                     type="file"
-                    accept=".glb,model/gltf-binary"
+                    accept=".glb,model/gltf-binary,application/octet-stream"
                     onChange={(event) => setFile(event.target.files?.[0] || null)}
-                    className="focus-ring mt-2 w-full rounded-md border border-dashed border-[var(--line)] bg-white px-3 py-5"
+                    className="focus-ring mt-2 w-full rounded-lg border border-dashed border-[var(--line)] bg-white px-3 py-5 text-[var(--ink)] file:mr-4 file:rounded-md file:border-0 file:bg-[var(--ink)] file:px-3 file:py-2 file:text-sm file:font-semibold file:text-white"
                   />
                 </label>
               </div>
@@ -212,26 +250,32 @@ export function AdminClient() {
                 </p>
               ) : null}
 
-              {busy || progress > 0 ? (
-                <div className="mt-5">
-                  <div className="h-3 overflow-hidden rounded-full bg-[#e6dfd0]">
-                    <div className="h-full bg-[var(--accent)]" style={{ width: `${progress}%` }} />
+              {uploadStage !== "idle" || progress > 0 ? (
+                <div className="mt-5 rounded-lg border border-[var(--line)] bg-white p-4">
+                  <div className="flex items-center justify-between gap-3 text-sm font-semibold">
+                    <span>{uploadLabel}</span>
+                    <span className="tabular-nums text-[var(--muted)]">{progress}%</span>
                   </div>
-                  <p className="mt-2 text-sm text-[var(--muted)]">{progress}% uploaded</p>
+                  <div className="mt-3 h-3 overflow-hidden rounded-full bg-[var(--soft)]">
+                    <div
+                      className="h-full rounded-full bg-[var(--accent)] transition-[width]"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
                 </div>
               ) : null}
 
               <button
                 type="submit"
-                disabled={busy}
-                className="focus-ring mt-6 rounded-md bg-[var(--accent)] px-4 py-3 font-semibold text-white hover:bg-[var(--accent-dark)] disabled:opacity-60"
+                disabled={working}
+                className="focus-ring mt-6 rounded-lg bg-[var(--accent)] px-4 py-3 font-semibold text-white transition hover:bg-[var(--accent-dark)] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {busy ? "Creating..." : "Create project"}
+                {working ? "Working..." : "Create project"}
               </button>
             </form>
 
-            <aside className="rounded-md border border-[var(--line)] bg-white p-5">
-              <h2 className="text-xl font-black">Project links</h2>
+            <aside className="rounded-xl border border-[var(--line)] bg-white p-5 shadow-sm">
+              <h2 className="text-xl font-black text-[var(--ink)]">Project links</h2>
               {!project ? (
                 <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
                   Upload a GLB to generate the public AR URL, fallback viewer URL, and QR code.
@@ -239,14 +283,16 @@ export function AdminClient() {
               ) : (
                 <div className="mt-4 space-y-5">
                   {qrDataUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={qrDataUrl} alt="QR code for AR page" className="w-64 rounded-md border border-[var(--line)]" />
+                    <div className="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={qrDataUrl} alt="QR code for AR page" className="mx-auto w-64 rounded-md border border-[var(--line)] bg-white" />
+                    </div>
                   ) : null}
                   <LinkRow label="AR URL" value={project.arUrl} />
                   <LinkRow label="Viewer URL" value={project.viewUrl} />
                   <Link
                     href={project.arUrl}
-                    className="focus-ring inline-block rounded-md bg-[var(--ink)] px-4 py-3 font-semibold text-white"
+                    className="focus-ring inline-block rounded-lg bg-[var(--ink)] px-4 py-3 font-semibold text-white transition hover:bg-black"
                   >
                     Open AR page
                   </Link>
@@ -257,8 +303,14 @@ export function AdminClient() {
         )}
 
         {error ? (
-          <div className="mt-6 rounded-md border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-900">
+          <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-900">
             {error}
+          </div>
+        ) : null}
+
+        {success ? (
+          <div className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">
+            {success}
           </div>
         ) : null}
       </div>
@@ -276,4 +328,76 @@ function LinkRow({ label, value }: { label: string; value: string }) {
       </div>
     </div>
   );
+}
+
+async function requestBlobClientToken(pathname: string, password: string, multipart: boolean) {
+  const response = await fetch("/api/blob/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "blob.generate-client-token",
+      payload: {
+        pathname,
+        multipart,
+        clientPayload: JSON.stringify({ password })
+      }
+    })
+  });
+
+  const result = await readJson<TokenResponse>(response);
+
+  if (!response.ok) {
+    throw new Error(
+      result?.error || `Unable to prepare the Blob upload (${response.status}).`
+    );
+  }
+
+  if (!result?.clientToken) {
+    throw new Error(result?.error || "The Blob upload route did not return a client token.");
+  }
+
+  return result.clientToken;
+}
+
+async function readJson<T>(response: Response) {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+function parseDecimalInput(rawValue: string, label: string) {
+  const normalized = rawValue.trim().replace(",", ".");
+
+  if (!normalized) {
+    throw new Error(`${label} is required.`);
+  }
+
+  const value = Number(normalized);
+
+  if (!Number.isFinite(value)) {
+    throw new Error(`${label} must be a valid number. Use 1.5 or 1,5.`);
+  }
+
+  return {
+    value,
+    normalized
+  };
+}
+
+function getGlbContentType(fileType: string) {
+  if (fileType === "model/gltf-binary" || fileType === "application/octet-stream") {
+    return fileType;
+  }
+
+  return "model/gltf-binary";
+}
+
+function getUploadLabel(stage: UploadStage, progress: number) {
+  if (stage === "idle" && progress >= 100) return "Upload complete.";
+  if (stage === "preparing") return "Preparing secure Blob upload...";
+  if (stage === "uploading") return progress >= 100 ? "Upload complete." : "Uploading GLB to Blob...";
+  if (stage === "saving") return "Saving project metadata...";
+  return "Upload ready.";
 }

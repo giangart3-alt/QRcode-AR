@@ -4,6 +4,17 @@ import { assertBlobConfigured, BlobConfigurationError } from "@/lib/projects";
 
 const MAX_GLB_SIZE = 500 * 1024 * 1024;
 
+function errorStatus(error: unknown) {
+  if (error instanceof BlobConfigurationError) return 500;
+  if (!(error instanceof Error)) return 400;
+
+  if (error.message.includes("ADMIN_PASSWORD")) return 500;
+  if (error.message.includes("Incorrect admin password")) return 401;
+  if (error.message.includes("maximum allowed size")) return 413;
+
+  return 400;
+}
+
 export async function POST(request: Request) {
   let body: HandleUploadBody;
 
@@ -32,11 +43,6 @@ export async function POST(request: Request) {
         }
 
         return {
-          allowedContentTypes: [
-            "model/gltf-binary",
-            "application/octet-stream",
-            ""
-          ],
           maximumSizeInBytes: MAX_GLB_SIZE,
           tokenPayload: "{}"
         };
@@ -51,6 +57,6 @@ export async function POST(request: Request) {
         ? error.message
         : "Unable to upload this GLB file.";
 
-    return NextResponse.json({ error: message }, { status: 400 });
+    return NextResponse.json({ error: message }, { status: errorStatus(error) });
   }
 }
