@@ -101,8 +101,7 @@ export function AdminClient() {
       setVerticalOffset(parsedVerticalOffset.normalized);
 
       const pendingName = name.trim() || file.name.replace(/\.glb$/i, "");
-      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
-      const pathname = `models/${crypto.randomUUID()}-${safeName}`;
+      const pathname = `models/${crypto.randomUUID()}.glb`;
       const multipart = file.size >= MULTIPART_THRESHOLD_BYTES;
       const clientPayload = JSON.stringify({ password });
 
@@ -158,7 +157,7 @@ export function AdminClient() {
       setQrDataUrl(await QRCode.toDataURL(result.project.arUrl, { margin: 1, width: 320 }));
       setProgress(100);
       window.sessionStorage.setItem("adminPassword", password);
-      setSuccess("Project created. The AR page, fallback viewer, placement editor, and QR code are ready.");
+      setSuccess("Project created with one scene. The AR project page, fallback viewer, workspace, and QR code are ready.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to create project.");
     } finally {
@@ -171,9 +170,14 @@ export function AdminClient() {
     <main className="min-h-screen px-5 py-6 text-[var(--foreground)]">
       <div className="mx-auto max-w-5xl">
         <div className="mb-8 flex items-center justify-between border-b border-[var(--line)] pb-5">
-          <Link className="focus-ring rounded-lg px-3 py-2 text-sm font-semibold text-[var(--muted)] transition hover:bg-white hover:text-[var(--ink)]" href="/">
-            Home
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link className="focus-ring rounded-lg px-3 py-2 text-sm font-semibold text-[var(--muted)] transition hover:bg-white hover:text-[var(--ink)]" href="/">
+              Home
+            </Link>
+            <Link className="focus-ring rounded-lg px-3 py-2 text-sm font-semibold text-[var(--muted)] transition hover:bg-white hover:text-[var(--ink)]" href="/admin/dashboard">
+              Dashboard
+            </Link>
+          </div>
           <Link className="focus-ring rounded-lg px-3 py-2 text-sm font-semibold text-[var(--muted)] transition hover:bg-white hover:text-[var(--ink)]" href="/marker">
             Marker
           </Link>
@@ -296,13 +300,13 @@ export function AdminClient() {
                   ) : null}
                   <LinkRow label="AR URL" value={project.arUrl} />
                   <LinkRow label="Viewer URL" value={project.viewUrl} />
-                  <LinkRow label="Editor URL" value={project.editorUrl} />
+                  <LinkRow label="Workspace URL" value={project.urls.dashboardUrl} />
                   <div className="grid gap-2 sm:grid-cols-2">
                     <Link
-                      href={project.editorUrl}
+                      href={project.urls.dashboardUrl}
                       className="focus-ring rounded-lg bg-[var(--accent)] px-4 py-3 text-center font-semibold text-white transition hover:bg-[var(--accent-dark)]"
                     >
-                      Open placement editor
+                      Open project workspace
                     </Link>
                     <Link
                       href={project.arUrl}

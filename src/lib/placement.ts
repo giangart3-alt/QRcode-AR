@@ -2,11 +2,9 @@ export const MARKER_IMAGE_URL = "/markers/playground.png";
 export const MARKER_PATTERN_URL = "/markers/playground.patt";
 export const DEFAULT_MARKER_WIDTH_MM = 1000;
 export const DEFAULT_MARKER_HEIGHT_MM = 700;
+export const DEFAULT_MARKER_STYLE_ID = "technical-grid";
 
 export type PlacementMetadata = {
-  markerImage: string;
-  markerWidthMm: number;
-  markerHeightMm: number;
   position: {
     x: number;
     y: number;
@@ -18,6 +16,24 @@ export type PlacementMetadata = {
     z: number;
   };
   scale: number;
+  markerImage?: string;
+  markerWidthMm?: number;
+  markerHeightMm?: number;
+};
+
+export type MarkerSettings = {
+  styleId: string;
+  imageUrl: string;
+  patternUrl: string;
+  widthMm: number;
+  heightMm: number;
+  coordinateSystem: {
+    origin: string;
+    xAxis: string;
+    yAxis: string;
+    zAxis: string;
+    units: "meters";
+  };
 };
 
 export function createDefaultPlacement(
@@ -25,9 +41,6 @@ export function createDefaultPlacement(
   verticalOffset = 0
 ): PlacementMetadata {
   return {
-    markerImage: MARKER_IMAGE_URL,
-    markerWidthMm: DEFAULT_MARKER_WIDTH_MM,
-    markerHeightMm: DEFAULT_MARKER_HEIGHT_MM,
     position: {
       x: 0,
       y: verticalOffset,
@@ -42,6 +55,23 @@ export function createDefaultPlacement(
   };
 }
 
+export function createDefaultMarker(): MarkerSettings {
+  return {
+    styleId: DEFAULT_MARKER_STYLE_ID,
+    imageUrl: MARKER_IMAGE_URL,
+    patternUrl: MARKER_PATTERN_URL,
+    widthMm: DEFAULT_MARKER_WIDTH_MM,
+    heightMm: DEFAULT_MARKER_HEIGHT_MM,
+    coordinateSystem: {
+      origin: "center of marker/playground",
+      xAxis: "left/right on marker",
+      yAxis: "vertical height above marker",
+      zAxis: "forward/back on marker",
+      units: "meters"
+    }
+  };
+}
+
 export function normalizePlacement(
   placement: Partial<PlacementMetadata> | null | undefined,
   fallbackScale = 1,
@@ -50,9 +80,6 @@ export function normalizePlacement(
   const fallback = createDefaultPlacement(fallbackScale, fallbackVerticalOffset);
 
   return {
-    markerImage: placement?.markerImage || fallback.markerImage,
-    markerWidthMm: positiveNumber(placement?.markerWidthMm, fallback.markerWidthMm),
-    markerHeightMm: positiveNumber(placement?.markerHeightMm, fallback.markerHeightMm),
     position: {
       x: finiteNumber(placement?.position?.x, fallback.position.x),
       y: finiteNumber(placement?.position?.y, fallback.position.y),
@@ -63,8 +90,36 @@ export function normalizePlacement(
       y: finiteNumber(placement?.rotation?.y, fallback.rotation.y),
       z: finiteNumber(placement?.rotation?.z, fallback.rotation.z)
     },
-    scale: positiveNumber(placement?.scale, fallback.scale)
+    scale: positiveNumber(placement?.scale, fallback.scale),
+    markerImage: placement?.markerImage,
+    markerWidthMm: placement?.markerWidthMm,
+    markerHeightMm: placement?.markerHeightMm
   };
+}
+
+export function normalizeMarker(marker: Partial<MarkerSettings> | null | undefined) {
+  const fallback = createDefaultMarker();
+
+  return {
+    styleId: marker?.styleId || fallback.styleId,
+    imageUrl: marker?.imageUrl || fallback.imageUrl,
+    patternUrl: marker?.patternUrl || fallback.patternUrl,
+    widthMm: positiveNumber(
+      marker?.widthMm ?? (marker as { markerWidthMm?: number } | null | undefined)?.markerWidthMm,
+      fallback.widthMm
+    ),
+    heightMm: positiveNumber(
+      marker?.heightMm ?? (marker as { markerHeightMm?: number } | null | undefined)?.markerHeightMm,
+      fallback.heightMm
+    ),
+    coordinateSystem: {
+      origin: marker?.coordinateSystem?.origin || fallback.coordinateSystem.origin,
+      xAxis: marker?.coordinateSystem?.xAxis || fallback.coordinateSystem.xAxis,
+      yAxis: marker?.coordinateSystem?.yAxis || fallback.coordinateSystem.yAxis,
+      zAxis: marker?.coordinateSystem?.zAxis || fallback.coordinateSystem.zAxis,
+      units: "meters" as const
+    }
+  } satisfies MarkerSettings;
 }
 
 export function mmToMeters(value: number) {

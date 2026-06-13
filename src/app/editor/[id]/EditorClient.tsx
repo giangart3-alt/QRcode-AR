@@ -5,10 +5,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
   createDefaultPlacement,
+  DEFAULT_MARKER_HEIGHT_MM,
+  DEFAULT_MARKER_WIDTH_MM,
   degreesToRadians,
   metersToMm,
   mmToMeters,
@@ -17,10 +17,9 @@ import {
   type PlacementMetadata
 } from "@/lib/placement";
 import type { ProjectMetadata } from "@/lib/projects";
+import { loadGltfModel } from "@/lib/three-gltf";
 
 type TransformMode = "translate" | "rotate" | "scale";
-
-const DRACO_DECODER_PATH = "https://www.gstatic.com/draco/v1/decoders/";
 
 export function EditorClient({ id }: { id: string }) {
   const canvasHostRef = useRef<HTMLDivElement | null>(null);
@@ -61,8 +60,8 @@ export function EditorClient({ id }: { id: string }) {
     const markerPlane = markerPlaneRef.current;
     if (markerPlane) {
       markerPlane.scale.set(
-        mmToMeters(nextPlacement.markerWidthMm),
-        mmToMeters(nextPlacement.markerHeightMm),
+        mmToMeters(nextPlacement.markerWidthMm || DEFAULT_MARKER_WIDTH_MM),
+        mmToMeters(nextPlacement.markerHeightMm || DEFAULT_MARKER_HEIGHT_MM),
         1
       );
     }
@@ -87,13 +86,7 @@ export function EditorClient({ id }: { id: string }) {
       }
 
       setProject(result.project);
-      setPlacement(
-        normalizePlacement(
-          result.project.placement,
-          result.project.scale,
-          result.project.verticalOffset
-        )
-      );
+      setPlacement(projectPlacement(result.project));
       setStatus("Project loaded.");
     }
 
@@ -111,7 +104,7 @@ export function EditorClient({ id }: { id: string }) {
     if (!project || !canvasHostRef.current) return;
 
     const activeProject = project;
-    const scenePlacement = activeProject.placement;
+    const marker = activeProject.marker;
     const host = canvasHostRef.current;
     let stopped = false;
     let animationFrame = 0;
@@ -128,8 +121,8 @@ export function EditorClient({ id }: { id: string }) {
 
     const camera = new THREE.PerspectiveCamera(48, 1, 0.01, 200);
     const maxMarkerMeters = Math.max(
-      mmToMeters(scenePlacement.markerWidthMm),
-      mmToMeters(scenePlacement.markerHeightMm)
+      mmToMeters(marker.widthMm),
+      mmToMeters(marker.heightMm)
     );
     camera.position.set(0.35, maxMarkerMeters * 0.75, maxMarkerMeters * 0.9);
     camera.lookAt(0, 0, 0);
@@ -146,7 +139,7 @@ export function EditorClient({ id }: { id: string }) {
     directional.position.set(2, 4, 3);
     scene.add(directional);
 
-    const texture = new THREE.TextureLoader().load(scenePlacement.markerImage);
+    const texture = new THREE.TextureLoader().load(marker.imageUrl);
     texture.colorSpace = THREE.SRGBColorSpace;
     const markerPlane = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
@@ -211,13 +204,13 @@ export function EditorClient({ id }: { id: string }) {
 
     async function loadModel() {
       setStatus("Loading GLB model...");
-      const loader = new GLTFLoader();
-      const dracoLoader = new DRACOLoader();
-      dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
-      loader.setDRACOLoader(dracoLoader);
 
       try {
-        const gltf = await loader.loadAsync(activeProject.modelUrl);
+        if (!activeProject.modelUrl) {
+          throw new Error("Active scene does not have a GLB model yet.");
+        }
+
+        const gltf = await loadGltfModel(activeProject.modelUrl);
         if (stopped) return;
 
         const model = gltf.scene;
@@ -238,8 +231,6 @@ export function EditorClient({ id }: { id: string }) {
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Unable to load GLB model.");
         setStatus("Model loading failed.");
-      } finally {
-        dracoLoader.dispose();
       }
     }
 
@@ -314,7 +305,7 @@ export function EditorClient({ id }: { id: string }) {
 
       window.sessionStorage.setItem("adminPassword", password);
       setProject(result.project);
-      setPlacement(result.project.placement);
+      setPlacement(projectPlacement(result.project));
       setStatus("Placement saved. Phone AR will use these values.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to save placement.");
@@ -326,7 +317,12 @@ export function EditorClient({ id }: { id: string }) {
 
   function resetPlacement() {
     if (!project) return;
-    setPlacement(createDefaultPlacement(project.scale, project.verticalOffset));
+    setPlacement({
+      ...createDefaultPlacement(project.scale, project.verticalOffset),
+      markerImage: project.marker.imageUrl,
+      markerWidthMm: project.marker.widthMm,
+      markerHeightMm: project.marker.heightMm
+    });
     setStatus("Placement reset to project defaults.");
   }
 
@@ -339,7 +335,10 @@ export function EditorClient({ id }: { id: string }) {
 
   function fitModelToMarker() {
     const targetMeters =
-      Math.min(placement.markerWidthMm, placement.markerHeightMm) / 1000 / 3;
+      Math.min(
+        placement.markerWidthMm || project?.marker.widthMm || DEFAULT_MARKER_WIDTH_MM,
+        placement.markerHeightMm || project?.marker.heightMm || DEFAULT_MARKER_HEIGHT_MM
+      ) / 1000 / 3;
     const nextScale = Math.max(targetMeters / baseModelSizeRef.current, 0.001);
     updatePlacement((current) => ({ ...current, scale: roundForStorage(nextScale) }));
     setStatus("Model scaled to roughly one third of the marker short side.");
@@ -451,12 +450,12 @@ export function EditorClient({ id }: { id: string }) {
               <div className="mt-4 grid grid-cols-2 gap-3">
                 <NumberField
                   label="Width mm"
-                  value={placement.markerWidthMm}
+                  value={placement.markerWidthMm || project?.marker.widthMm || DEFAULT_MARKER_WIDTH_MM}
                   onChange={(value) => setMarkerNumber("markerWidthMm", value)}
                 />
                 <NumberField
                   label="Height mm"
-                  value={placement.markerHeightMm}
+                  value={placement.markerHeightMm || project?.marker.heightMm || DEFAULT_MARKER_HEIGHT_MM}
                   onChange={(value) => setMarkerNumber("markerHeightMm", value)}
                 />
               </div>
@@ -591,4 +590,13 @@ function formatNumber(value: number) {
 
 function roundForStorage(value: number) {
   return Math.round(value * 1000) / 1000;
+}
+
+function projectPlacement(project: ProjectMetadata) {
+  return {
+    ...normalizePlacement(project.placement, project.scale, project.verticalOffset),
+    markerImage: project.marker.imageUrl,
+    markerWidthMm: project.marker.widthMm,
+    markerHeightMm: project.marker.heightMm
+  };
 }

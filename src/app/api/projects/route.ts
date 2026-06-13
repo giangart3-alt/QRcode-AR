@@ -1,12 +1,33 @@
 import { NextResponse } from "next/server";
+import { readAdminPassword, validateAdminPassword } from "@/lib/admin-auth";
 import { createDefaultPlacement } from "@/lib/placement";
 import {
   BlobConfigurationError,
-  projectUrls,
-  ProjectMetadata,
-  sanitizeId,
-  saveProject
+  createProject,
+  createScene,
+  listProjects,
+  saveProject,
+  summarizeProject
 } from "@/lib/projects";
+
+export async function GET(request: Request) {
+  try {
+    const auth = validateAdminPassword(readAdminPassword(request));
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status });
+    }
+
+    const projects = await listProjects();
+    return NextResponse.json({ projects: projects.map(summarizeProject) });
+  } catch (error) {
+    const message =
+      error instanceof BlobConfigurationError || error instanceof Error
+        ? error.message
+        : "Unable to list projects.";
+
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -18,57 +39,56 @@ export async function POST(request: Request) {
       modelUrl?: string;
       modelPathname?: string;
       modelSize?: number;
+      scaleMode?: "fit" | "architectural";
+      architecturalScale?: number;
+      normalizedScale?: number;
     };
 
-    if (!process.env.ADMIN_PASSWORD) {
-      return NextResponse.json(
-        { error: "ADMIN_PASSWORD is not configured in Vercel." },
-        { status: 500 }
-      );
-    }
-
-    if (body.password !== process.env.ADMIN_PASSWORD) {
-      return NextResponse.json(
-        { error: "Incorrect admin password." },
-        { status: 401 }
-      );
+    const auth = validateAdminPassword(readAdminPassword(request, body.password));
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status });
     }
 
     if (!body.name?.trim()) {
       return NextResponse.json({ error: "Project name is required." }, { status: 400 });
     }
 
-    if (!body.modelUrl || !body.modelPathname) {
+    const hasModel = Boolean(body.modelUrl || body.modelPathname);
+    if (hasModel && (!body.modelUrl || !body.modelPathname)) {
       return NextResponse.json(
-        { error: "Upload a GLB file before creating a project." },
+        { error: "Both modelUrl and modelPathname are required for a scene." },
         { status: 400 }
       );
     }
 
-    if (!body.modelPathname.toLowerCase().endsWith(".glb")) {
+    if (body.modelPathname && !body.modelPathname.toLowerCase().endsWith(".glb")) {
       return NextResponse.json({ error: "Only .glb files are allowed." }, { status: 400 });
     }
 
-    const id = sanitizeId(body.name);
-    const urls = projectUrls(id);
-    const scale = Number.isFinite(body.scale) ? Number(body.scale) : 1;
+    const normalizedScale = Number.isFinite(body.normalizedScale)
+      ? Number(body.normalizedScale)
+      : Number.isFinite(body.scale)
+        ? Number(body.scale)
+        : 1;
     const verticalOffset = Number.isFinite(body.verticalOffset)
       ? Number(body.verticalOffset)
       : 0;
-    const project: ProjectMetadata = {
-      id,
+    const scene = hasModel
+      ? createScene({
+          name: body.name,
+          modelUrl: body.modelUrl,
+          modelPathname: body.modelPathname,
+          modelSize: body.modelSize,
+          placement: createDefaultPlacement(normalizedScale, verticalOffset),
+          scaleMode: body.scaleMode,
+          architecturalScale: body.architecturalScale,
+          normalizedScale
+        })
+      : null;
+    const project = createProject({
       name: body.name.trim(),
-      scale,
-      verticalOffset,
-      modelUrl: body.modelUrl,
-      modelPathname: body.modelPathname,
-      modelSize: Number(body.modelSize || 0),
-      createdAt: new Date().toISOString(),
-      arUrl: urls.arUrl,
-      viewUrl: urls.viewUrl,
-      editorUrl: urls.editorUrl,
-      placement: createDefaultPlacement(scale, verticalOffset)
-    };
+      scene
+    });
 
     await saveProject(project);
 

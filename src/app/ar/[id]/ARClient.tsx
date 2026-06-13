@@ -3,14 +3,12 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
   degreesToRadians,
-  MARKER_PATTERN_URL,
   mmToMeters
 } from "@/lib/placement";
 import type { ProjectMetadata } from "@/lib/projects";
+import { loadGltfModel } from "@/lib/three-gltf";
 
 declare global {
   interface Window {
@@ -45,7 +43,6 @@ type RuntimeStatus = Record<
 
 const AR_SCRIPT = "https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.7/three.js/build/ar-threex.js";
 const CAMERA_PARAMETERS = "https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.7/data/data/camera_para.dat";
-const DRACO_DECODER_PATH = "https://www.gstatic.com/draco/v1/decoders/";
 
 export function ARClient({ id }: { id: string }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -111,6 +108,7 @@ export function ARClient({ id }: { id: string }) {
     cleanupRef.current?.();
     const currentProject = project;
     const placement = currentProject.placement;
+    const marker = currentProject.marker;
     let stopped = false;
     let animationFrame = 0;
     let resizeHandler: (() => void) | null = null;
@@ -224,8 +222,8 @@ export function ARClient({ id }: { id: string }) {
 
       new window.THREEx.ArMarkerControls(arToolkitContext, markerRoot, {
         type: "pattern",
-        patternUrl: MARKER_PATTERN_URL,
-        size: mmToMeters(placement.markerWidthMm),
+        patternUrl: marker.patternUrl,
+        size: mmToMeters(marker.widthMm),
         changeMatrixMode: "modelViewMatrix"
       });
       setStatus("marker", "official playground pattern loaded");
@@ -242,13 +240,13 @@ export function ARClient({ id }: { id: string }) {
 
       setStatus("model", "loading");
       setMessage("Loading model...");
-      const loader = new GLTFLoader();
-      const dracoLoader = new DRACOLoader();
-      dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
-      loader.setDRACOLoader(dracoLoader);
 
       try {
-        const gltf = await loader.loadAsync(currentProject.modelUrl);
+        if (!currentProject.modelUrl) {
+          throw new Error("Active scene does not have a GLB model yet.");
+        }
+
+        const gltf = await loadGltfModel(currentProject.modelUrl);
         if (stopped) return;
 
         const model = gltf.scene;
@@ -276,8 +274,6 @@ export function ARClient({ id }: { id: string }) {
         setStatus("model", errorMessage);
         setMessage(errorMessage);
         return;
-      } finally {
-        dracoLoader.dispose();
       }
 
       let lastSeen = 0;
@@ -352,7 +348,7 @@ export function ARClient({ id }: { id: string }) {
               </Link>
               <Link
                 className="focus-ring rounded-lg bg-white/15 px-3 py-2 text-sm font-semibold backdrop-blur hover:bg-white/25"
-                href="/marker"
+                href={project.markerUrl}
               >
                 Marker
               </Link>
@@ -384,8 +380,8 @@ export function ARClient({ id }: { id: string }) {
                 status: runtimeStatus,
                 project: project?.id,
                 modelUrl: project?.modelUrl,
-                markerImage: project?.placement.markerImage,
-                markerPattern: MARKER_PATTERN_URL,
+                markerImage: project?.marker.imageUrl,
+                markerPattern: project?.marker.patternUrl,
                 placement: project?.placement,
                 userAgent: navigator.userAgent
               },
