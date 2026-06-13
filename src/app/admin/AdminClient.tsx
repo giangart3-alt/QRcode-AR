@@ -1,6 +1,6 @@
 "use client";
 
-import { put } from "@vercel/blob/client";
+import { upload } from "@vercel/blob/client";
 import QRCode from "qrcode";
 import { FormEvent, useMemo, useState } from "react";
 import Link from "next/link";
@@ -15,9 +15,7 @@ type UploadProgress = {
 
 type UploadStage = "idle" | "preparing" | "uploading" | "saving";
 
-type TokenResponse = {
-  type?: "blob.generate-client-token";
-  clientToken?: string;
+type UploadRouteResponse = {
   error?: string;
 };
 
@@ -66,6 +64,7 @@ export function AdminClient() {
       return;
     }
 
+    window.sessionStorage.setItem("adminPassword", password);
     setUnlocked(true);
   }
 
@@ -105,25 +104,31 @@ export function AdminClient() {
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
       const pathname = `models/${crypto.randomUUID()}-${safeName}`;
       const multipart = file.size >= MULTIPART_THRESHOLD_BYTES;
-      const token = await requestBlobClientToken(pathname, password, multipart);
+      const clientPayload = JSON.stringify({ password });
 
       setUploadStage("uploading");
-      const blob = await put(pathname, file, {
-        access: "public",
-        token,
-        multipart,
-        contentType: getGlbContentType(file.type),
-        onUploadProgress: (event: UploadProgress) => {
-          if (typeof event.percentage === "number") {
-            setProgress(Math.round(event.percentage));
-            return;
-          }
+      let blob;
+      try {
+        blob = await upload(pathname, file, {
+          access: "public",
+          handleUploadUrl: "/api/blob/upload",
+          clientPayload,
+          multipart,
+          contentType: getGlbContentType(file.type),
+          onUploadProgress: (event: UploadProgress) => {
+            if (typeof event.percentage === "number") {
+              setProgress(Math.round(event.percentage));
+              return;
+            }
 
-          if (event.loaded && event.total) {
-            setProgress(Math.round((event.loaded / event.total) * 100));
+            if (event.loaded && event.total) {
+              setProgress(Math.round((event.loaded / event.total) * 100));
+            }
           }
-        }
-      });
+        });
+      } catch (uploadError) {
+        throw await resolveBlobUploadError(uploadError, pathname, clientPayload, multipart);
+      }
 
       setUploadStage("saving");
       const response = await fetch("/api/projects", {
@@ -152,7 +157,8 @@ export function AdminClient() {
       setProject(result.project);
       setQrDataUrl(await QRCode.toDataURL(result.project.arUrl, { margin: 1, width: 320 }));
       setProgress(100);
-      setSuccess("Project created. The AR page, fallback viewer, and QR code are ready.");
+      window.sessionStorage.setItem("adminPassword", password);
+      setSuccess("Project created. The AR page, fallback viewer, placement editor, and QR code are ready.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to create project.");
     } finally {
@@ -290,12 +296,27 @@ export function AdminClient() {
                   ) : null}
                   <LinkRow label="AR URL" value={project.arUrl} />
                   <LinkRow label="Viewer URL" value={project.viewUrl} />
-                  <Link
-                    href={project.arUrl}
-                    className="focus-ring inline-block rounded-lg bg-[var(--ink)] px-4 py-3 font-semibold text-white transition hover:bg-black"
-                  >
-                    Open AR page
-                  </Link>
+                  <LinkRow label="Editor URL" value={project.editorUrl} />
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <Link
+                      href={project.editorUrl}
+                      className="focus-ring rounded-lg bg-[var(--accent)] px-4 py-3 text-center font-semibold text-white transition hover:bg-[var(--accent-dark)]"
+                    >
+                      Open placement editor
+                    </Link>
+                    <Link
+                      href={project.arUrl}
+                      className="focus-ring rounded-lg bg-[var(--ink)] px-4 py-3 text-center font-semibold text-white transition hover:bg-black"
+                    >
+                      Open AR page
+                    </Link>
+                    <Link
+                      href={project.viewUrl}
+                      className="button-secondary text-center"
+                    >
+                      Open viewer
+                    </Link>
+                  </div>
                 </div>
               )}
             </aside>
@@ -330,33 +351,43 @@ function LinkRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-async function requestBlobClientToken(pathname: string, password: string, multipart: boolean) {
-  const response = await fetch("/api/blob/upload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "blob.generate-client-token",
-      payload: {
-        pathname,
-        multipart,
-        clientPayload: JSON.stringify({ password })
-      }
-    })
-  });
+async function resolveBlobUploadError(
+  uploadError: unknown,
+  pathname: string,
+  clientPayload: string,
+  multipart: boolean
+) {
+  const originalMessage =
+    uploadError instanceof Error ? uploadError.message : "Unable to upload this GLB file.";
 
-  const result = await readJson<TokenResponse>(response);
-
-  if (!response.ok) {
-    throw new Error(
-      result?.error || `Unable to prepare the Blob upload (${response.status}).`
-    );
+  if (!originalMessage.toLowerCase().includes("client token")) {
+    return uploadError instanceof Error ? uploadError : new Error(originalMessage);
   }
 
-  if (!result?.clientToken) {
-    throw new Error(result?.error || "The Blob upload route did not return a client token.");
+  try {
+    const response = await fetch("/api/blob/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "blob.generate-client-token",
+        payload: {
+          pathname,
+          multipart,
+          clientPayload
+        }
+      })
+    });
+
+    const result = await readJson<UploadRouteResponse>(response);
+
+    if (!response.ok && result?.error) {
+      return new Error(result.error);
+    }
+  } catch {
+    return new Error(originalMessage);
   }
 
-  return result.clientToken;
+  return new Error(originalMessage);
 }
 
 async function readJson<T>(response: Response) {

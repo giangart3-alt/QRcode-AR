@@ -44,6 +44,26 @@ input {
   outline-offset: 2px;
 }
 
+.button-secondary {
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: white;
+  color: var(--ink);
+  display: inline-block;
+  font-size: 0.875rem;
+  font-weight: 700;
+  padding: 0.75rem 1rem;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.button-secondary:hover {
+  background: var(--soft);
+  border-color: var(--accent);
+}
+
 @media print {
   .no-print {
     display: none !important;
@@ -51,5 +71,10 @@ input {
 
   body {
     background: white;
+  }
+
+  @page {
+    margin: 8mm;
+    size: landscape;
   }
 }

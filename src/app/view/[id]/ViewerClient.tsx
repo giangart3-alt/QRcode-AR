@@ -69,6 +69,7 @@ export function ViewerClient({ id }: { id: string }) {
               auto-rotate
               shadow-intensity="0.8"
               exposure="1"
+              draco-decoder-location="https://www.gstatic.com/draco/v1/decoders/"
               alt={project.name}
               style={{ width: "100%", minHeight: "72vh", background: "#e9e3d5", borderRadius: 8 }}
             />
@@ -79,12 +80,32 @@ export function ViewerClient({ id }: { id: string }) {
                 Use orbit controls to inspect the model. If your phone supports WebXR,
                 Scene Viewer, or Quick Look, the AR button will appear inside the viewer.
               </p>
-              <Link
-                className="focus-ring mt-5 inline-block rounded-md bg-teal-500 px-4 py-3 font-semibold text-black"
-                href={`/ar/${project.id}`}
-              >
-                Try marker AR
-              </Link>
+              <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
+                <div className="rounded-md bg-white/8 p-3">
+                  <dt className="font-semibold text-white/55">Marker</dt>
+                  <dd className="mt-1 font-bold text-white">
+                    {project.placement.markerWidthMm} x {project.placement.markerHeightMm} mm
+                  </dd>
+                </div>
+                <div className="rounded-md bg-white/8 p-3">
+                  <dt className="font-semibold text-white/55">Scale</dt>
+                  <dd className="mt-1 font-bold text-white">{project.placement.scale}</dd>
+                </div>
+              </dl>
+              <div className="mt-5 grid gap-2">
+                <Link
+                  className="focus-ring rounded-md bg-teal-500 px-4 py-3 text-center font-semibold text-black"
+                  href={`/ar/${project.id}`}
+                >
+                  Try marker AR
+                </Link>
+                <Link
+                  className="focus-ring rounded-md border border-white/20 bg-white/10 px-4 py-3 text-center font-semibold text-white hover:bg-white/15"
+                  href={project.editorUrl}
+                >
+                  Open placement editor
+                </Link>
+              </div>
             </aside>
           </section>
         ) : null}

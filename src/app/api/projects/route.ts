@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
+import { createDefaultPlacement } from "@/lib/placement";
 import {
   BlobConfigurationError,
-  getSiteUrl,
+  projectUrls,
   ProjectMetadata,
   sanitizeId,
   saveProject
@@ -48,21 +49,25 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Only .glb files are allowed." }, { status: 400 });
     }
 
-    const siteUrl = getSiteUrl();
     const id = sanitizeId(body.name);
+    const urls = projectUrls(id);
+    const scale = Number.isFinite(body.scale) ? Number(body.scale) : 1;
+    const verticalOffset = Number.isFinite(body.verticalOffset)
+      ? Number(body.verticalOffset)
+      : 0;
     const project: ProjectMetadata = {
       id,
       name: body.name.trim(),
-      scale: Number.isFinite(body.scale) ? Number(body.scale) : 1,
-      verticalOffset: Number.isFinite(body.verticalOffset)
-        ? Number(body.verticalOffset)
-        : 0,
+      scale,
+      verticalOffset,
       modelUrl: body.modelUrl,
       modelPathname: body.modelPathname,
       modelSize: Number(body.modelSize || 0),
       createdAt: new Date().toISOString(),
-      arUrl: `${siteUrl}/ar/${id}`,
-      viewUrl: `${siteUrl}/view/${id}`
+      arUrl: urls.arUrl,
+      viewUrl: urls.viewUrl,
+      editorUrl: urls.editorUrl,
+      placement: createDefaultPlacement(scale, verticalOffset)
     };
 
     await saveProject(project);

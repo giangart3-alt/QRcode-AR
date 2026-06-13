@@ -1,4 +1,9 @@
 import { list, put } from "@vercel/blob";
+import {
+  createDefaultPlacement,
+  normalizePlacement,
+  type PlacementMetadata
+} from "@/lib/placement";
 
 export type ProjectMetadata = {
   id: string;
@@ -11,6 +16,8 @@ export type ProjectMetadata = {
   createdAt: string;
   arUrl: string;
   viewUrl: string;
+  editorUrl: string;
+  placement: PlacementMetadata;
 };
 
 export class BlobConfigurationError extends Error {
@@ -37,6 +44,16 @@ export function getSiteUrl() {
 
 export function metadataPath(id: string) {
   return `projects/${id}.json`;
+}
+
+export function projectUrls(id: string) {
+  const siteUrl = getSiteUrl();
+
+  return {
+    arUrl: `${siteUrl}/ar/${id}`,
+    viewUrl: `${siteUrl}/view/${id}`,
+    editorUrl: `${siteUrl}/editor/${id}`
+  };
 }
 
 export function sanitizeId(name: string) {
@@ -86,5 +103,39 @@ export async function loadProject(id: string) {
     throw new Error(`Unable to load project metadata (${response.status}).`);
   }
 
-  return (await response.json()) as ProjectMetadata;
+  return normalizeProjectMetadata((await response.json()) as Partial<ProjectMetadata>);
+}
+
+export function normalizeProjectMetadata(project: Partial<ProjectMetadata>) {
+  const id = project.id || "model";
+  const urls = projectUrls(id);
+  const scale = typeof project.scale === "number" && Number.isFinite(project.scale)
+    ? project.scale
+    : 1;
+  const verticalOffset =
+    typeof project.verticalOffset === "number" && Number.isFinite(project.verticalOffset)
+      ? project.verticalOffset
+      : 0;
+
+  return {
+    id,
+    name: project.name || "Untitled model",
+    scale,
+    verticalOffset,
+    modelUrl: project.modelUrl || "",
+    modelPathname: project.modelPathname || "",
+    modelSize:
+      typeof project.modelSize === "number" && Number.isFinite(project.modelSize)
+        ? project.modelSize
+        : 0,
+    createdAt: project.createdAt || new Date().toISOString(),
+    arUrl: project.arUrl || urls.arUrl,
+    viewUrl: project.viewUrl || urls.viewUrl,
+    editorUrl: project.editorUrl || urls.editorUrl,
+    placement: normalizePlacement(
+      project.placement || createDefaultPlacement(scale, verticalOffset),
+      scale,
+      verticalOffset
+    )
+  } satisfies ProjectMetadata;
 }

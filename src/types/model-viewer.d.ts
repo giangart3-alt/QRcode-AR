@@ -10,6 +10,7 @@ declare module "react" {
         "camera-controls"?: boolean;
         "auto-rotate"?: boolean;
         "shadow-intensity"?: string;
+        "draco-decoder-location"?: string;
         exposure?: string;
         alt?: string;
       };

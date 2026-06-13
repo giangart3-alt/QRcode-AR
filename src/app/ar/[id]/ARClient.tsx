@@ -1,9 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import {
+  degreesToRadians,
+  MARKER_PATTERN_URL,
+  mmToMeters
+} from "@/lib/placement";
 import type { ProjectMetadata } from "@/lib/projects";
 
 declare global {
@@ -32,23 +38,42 @@ declare global {
   }
 }
 
+type RuntimeStatus = Record<
+  "project" | "webgl" | "camera" | "marker" | "model" | "tracking",
+  string
+>;
+
 const AR_SCRIPT = "https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.7/three.js/build/ar-threex.js";
 const CAMERA_PARAMETERS = "https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.7/data/data/camera_para.dat";
-const HIRO_PATTERN = "https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.7/data/data/patt.hiro";
+const DRACO_DECODER_PATH = "https://www.gstatic.com/draco/v1/decoders/";
 
 export function ARClient({ id }: { id: string }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
-  const modelRef = useRef<THREE.Object3D | null>(null);
   const [project, setProject] = useState<ProjectMetadata | null>(null);
   const [message, setMessage] = useState("Loading project...");
   const [debug, setDebug] = useState(false);
-  const [runtimeScale, setRuntimeScale] = useState(1);
+  const [trackingResetKey, setTrackingResetKey] = useState(0);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>({
+    project: "loading",
+    webgl: "pending",
+    camera: "pending",
+    marker: "pending",
+    model: "pending",
+    tracking: "pending"
+  });
+
+  const setStatus = useCallback((key: keyof RuntimeStatus, value: string) => {
+    setRuntimeStatus((current) =>
+      current[key] === value ? current : { ...current, [key]: value }
+    );
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadProject() {
+      setStatus("project", "loading");
       const response = await fetch(`/api/projects/${id}`, { cache: "no-store" });
       const result = (await response.json()) as {
         project?: ProjectMetadata;
@@ -58,55 +83,80 @@ export function ARClient({ id }: { id: string }) {
       if (cancelled) return;
 
       if (!response.ok || !result.project) {
-        setMessage(result.error || "Model not found.");
+        const errorMessage = result.error || "Model not found.";
+        setStatus("project", errorMessage);
+        setMessage(errorMessage);
         return;
       }
 
       setProject(result.project);
+      setStatus("project", "loaded");
+      setMessage("Project loaded. Preparing camera...");
     }
 
-    loadProject().catch((caught) =>
-      setMessage(caught instanceof Error ? caught.message : "Unable to load project.")
-    );
+    loadProject().catch((caught) => {
+      const errorMessage = caught instanceof Error ? caught.message : "Unable to load project.";
+      setStatus("project", errorMessage);
+      setMessage(errorMessage);
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, setStatus]);
 
   useEffect(() => {
     if (!project || !mountRef.current) return;
 
+    cleanupRef.current?.();
     const currentProject = project;
+    const placement = currentProject.placement;
     let stopped = false;
     let animationFrame = 0;
     let resizeHandler: (() => void) | null = null;
+    let lastTrackingState = "";
 
     async function start() {
       if (!navigator.mediaDevices?.getUserMedia) {
+        setStatus("camera", "unsupported");
         setMessage("Unsupported browser. Try Chrome on Android, or use the fallback viewer.");
         return;
       }
 
-      setMessage("Requesting camera permission...");
       window.THREE = THREE;
+      setStatus("marker", "loading AR runtime");
+      setMessage("Loading marker tracking...");
 
       try {
         await loadScript(AR_SCRIPT);
       } catch {
+        setStatus("marker", "tracking runtime failed");
         setMessage("Unable to load the marker tracking library. Use the fallback viewer.");
         return;
       }
 
       if (!window.THREEx || stopped || !mountRef.current) {
+        setStatus("marker", "tracking runtime unavailable");
         setMessage("Unsupported browser. Use the fallback viewer.");
         return;
       }
 
-      const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+      let renderer: THREE.WebGLRenderer;
+      try {
+        renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+        renderer.getContext();
+      } catch {
+        setStatus("webgl", "unavailable");
+        setMessage("WebGL is unavailable in this browser.");
+        return;
+      }
+
+      setStatus("webgl", "ready");
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.15;
       mountRef.current.appendChild(renderer.domElement);
 
       const scene = new THREE.Scene();
@@ -117,10 +167,12 @@ export function ARClient({ id }: { id: string }) {
       markerRoot.visible = false;
       scene.add(markerRoot);
 
-      const light = new THREE.HemisphereLight(0xffffff, 0x606060, 2.8);
-      markerRoot.add(light);
-      const directional = new THREE.DirectionalLight(0xffffff, 2);
-      directional.position.set(0.5, 1, 0.5);
+      const ambient = new THREE.AmbientLight(0xffffff, 1.6);
+      markerRoot.add(ambient);
+      const hemisphere = new THREE.HemisphereLight(0xffffff, 0x65756f, 2.8);
+      markerRoot.add(hemisphere);
+      const directional = new THREE.DirectionalLight(0xffffff, 2.8);
+      directional.position.set(0.5, 1.4, 0.8);
       markerRoot.add(directional);
 
       const arToolkitSource = new window.THREEx.ArToolkitSource({
@@ -130,6 +182,9 @@ export function ARClient({ id }: { id: string }) {
         displayWidth: window.innerWidth,
         displayHeight: window.innerHeight
       });
+
+      setStatus("camera", "permission requested");
+      setMessage("Requesting camera permission...");
 
       try {
         await new Promise<void>((resolve, reject) => {
@@ -145,9 +200,12 @@ export function ARClient({ id }: { id: string }) {
             }
           );
         });
+        setStatus("camera", "active");
       } catch {
+        setStatus("camera", "permission denied");
         setMessage("Camera permission denied. Allow camera access, then reload this page.");
         renderer.dispose();
+        renderer.domElement.remove();
         return;
       }
 
@@ -156,6 +214,7 @@ export function ARClient({ id }: { id: string }) {
         detectionMode: "mono"
       });
 
+      setStatus("marker", "initializing");
       await new Promise<void>((resolve) => {
         arToolkitContext.init(() => {
           camera.projectionMatrix.copy(arToolkitContext.getProjectionMatrix());
@@ -165,9 +224,11 @@ export function ARClient({ id }: { id: string }) {
 
       new window.THREEx.ArMarkerControls(arToolkitContext, markerRoot, {
         type: "pattern",
-        patternUrl: HIRO_PATTERN,
+        patternUrl: MARKER_PATTERN_URL,
+        size: mmToMeters(placement.markerWidthMm),
         changeMatrixMode: "modelViewMatrix"
       });
+      setStatus("marker", "official playground pattern loaded");
 
       resizeHandler = () => {
         arToolkitSource.onResizeElement();
@@ -179,17 +240,55 @@ export function ARClient({ id }: { id: string }) {
       window.addEventListener("resize", resizeHandler);
       resizeHandler();
 
+      setStatus("model", "loading");
       setMessage("Loading model...");
-      const gltf = await new GLTFLoader().loadAsync(currentProject.modelUrl);
-      const model = gltf.scene;
-      model.position.y = currentProject.verticalOffset;
-      model.scale.setScalar(currentProject.scale * runtimeScale);
-      markerRoot.add(model);
-      modelRef.current = model;
-      setMessage("Point the camera at the printed marker.");
+      const loader = new GLTFLoader();
+      const dracoLoader = new DRACOLoader();
+      dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
+      loader.setDRACOLoader(dracoLoader);
+
+      try {
+        const gltf = await loader.loadAsync(currentProject.modelUrl);
+        if (stopped) return;
+
+        const model = gltf.scene;
+        model.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            child.frustumCulled = false;
+          }
+        });
+        model.position.set(
+          mmToMeters(placement.position.x),
+          mmToMeters(placement.position.y),
+          mmToMeters(placement.position.z)
+        );
+        model.rotation.set(
+          degreesToRadians(placement.rotation.x),
+          degreesToRadians(placement.rotation.y),
+          degreesToRadians(placement.rotation.z)
+        );
+        model.scale.setScalar(placement.scale);
+        markerRoot.add(model);
+        setStatus("model", "loaded");
+        setMessage("Point the camera at the official playground marker.");
+      } catch (caught) {
+        const errorMessage = caught instanceof Error ? caught.message : "Model loading error.";
+        setStatus("model", errorMessage);
+        setMessage(errorMessage);
+        return;
+      } finally {
+        dracoLoader.dispose();
+      }
 
       let lastSeen = 0;
-      const graceMs = 900;
+      const graceMs = 550;
+
+      function updateTrackingState(nextState: string) {
+        if (lastTrackingState === nextState) return;
+        lastTrackingState = nextState;
+        setStatus("tracking", nextState);
+        setMessage(nextState);
+      }
 
       function animate() {
         if (stopped) return;
@@ -199,12 +298,12 @@ export function ARClient({ id }: { id: string }) {
           arToolkitContext.update(arToolkitSource.domElement);
           if (markerRoot.visible) {
             lastSeen = Date.now();
-            setMessage("Marker found.");
+            updateTrackingState("marker found");
           } else if (Date.now() - lastSeen < graceMs) {
             markerRoot.visible = true;
-            setMessage("Holding last marker position.");
+            updateTrackingState("holding last marker pose");
           } else {
-            setMessage("Marker not found. Point the camera at the printed marker.");
+            updateTrackingState("marker lost");
           }
         }
 
@@ -223,7 +322,9 @@ export function ARClient({ id }: { id: string }) {
     }
 
     start().catch((caught) => {
-      setMessage(caught instanceof Error ? caught.message : "Model loading error.");
+      const errorMessage = caught instanceof Error ? caught.message : "AR runtime error.";
+      setMessage(errorMessage);
+      setStatus("tracking", errorMessage);
     });
 
     return () => {
@@ -231,73 +332,61 @@ export function ARClient({ id }: { id: string }) {
       cleanupRef.current?.();
       cleanupRef.current = null;
     };
-  }, [project, id, runtimeScale]);
-
-  useEffect(() => {
-    if (!modelRef.current || !project) return;
-    modelRef.current.scale.setScalar(project.scale * runtimeScale);
-  }, [project, runtimeScale]);
-
-  function reset() {
-    setRuntimeScale(1);
-    if (modelRef.current && project) {
-      modelRef.current.position.y = project.verticalOffset;
-      modelRef.current.rotation.set(0, 0, 0);
-    }
-  }
+  }, [project, trackingResetKey, setStatus]);
 
   return (
     <main className="fixed inset-0 overflow-hidden bg-black text-white">
       <div ref={mountRef} className="absolute inset-0" />
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black/80 to-transparent p-4">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black/85 to-transparent p-4">
         <div className="pointer-events-auto flex flex-wrap items-center gap-2">
-          <Link className="focus-ring rounded-md bg-white/15 px-3 py-2 text-sm font-semibold backdrop-blur" href="/">
+          <Link className="focus-ring rounded-lg bg-white/15 px-3 py-2 text-sm font-semibold backdrop-blur hover:bg-white/25" href="/">
             Home
           </Link>
           {project ? (
-            <Link
-              className="focus-ring rounded-md bg-teal-400 px-3 py-2 text-sm font-semibold text-black"
-              href={`/view/${project.id}`}
-            >
-              Open fallback viewer
-            </Link>
+            <>
+              <Link
+                className="focus-ring rounded-lg bg-teal-400 px-3 py-2 text-sm font-semibold text-black hover:bg-teal-300"
+                href={project.viewUrl}
+              >
+                Open fallback viewer
+              </Link>
+              <Link
+                className="focus-ring rounded-lg bg-white/15 px-3 py-2 text-sm font-semibold backdrop-blur hover:bg-white/25"
+                href="/marker"
+              >
+                Marker
+              </Link>
+            </>
           ) : null}
         </div>
-        <p className="mt-3 max-w-xl rounded-md bg-black/45 p-3 text-sm font-semibold backdrop-blur">{message}</p>
+        <p className="mt-3 max-w-xl rounded-lg bg-black/55 p-3 text-sm font-semibold backdrop-blur">{message}</p>
       </div>
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 to-transparent p-4">
         <div className="pointer-events-auto flex flex-wrap gap-2">
-          <button className="focus-ring rounded-md bg-white px-3 py-3 text-sm font-bold text-black" onClick={reset}>
-            Reset
-          </button>
           <button
-            className="focus-ring rounded-md bg-white px-3 py-3 text-sm font-bold text-black"
-            onClick={() => setRuntimeScale((value) => Math.max(0.05, value - 0.1))}
+            className="focus-ring rounded-lg bg-white px-3 py-3 text-sm font-bold text-black hover:bg-neutral-200"
+            onClick={() => setTrackingResetKey((value) => value + 1)}
           >
-            Scale -
+            Reset tracking
           </button>
           <button
-            className="focus-ring rounded-md bg-white px-3 py-3 text-sm font-bold text-black"
-            onClick={() => setRuntimeScale((value) => Math.min(8, value + 0.1))}
-          >
-            Scale +
-          </button>
-          <button
-            className="focus-ring rounded-md bg-white/15 px-3 py-3 text-sm font-bold"
+            className="focus-ring rounded-lg bg-white/15 px-3 py-3 text-sm font-bold backdrop-blur hover:bg-white/25"
             onClick={() => setDebug((value) => !value)}
           >
             Debug
           </button>
         </div>
         {debug ? (
-          <pre className="pointer-events-auto mt-3 max-w-md overflow-auto rounded-md bg-black/70 p-3 text-xs text-teal-100">
+          <pre className="pointer-events-auto mt-3 max-h-[40vh] max-w-2xl overflow-auto rounded-lg bg-black/75 p-3 text-xs leading-5 text-teal-100">
             {JSON.stringify(
               {
+                status: runtimeStatus,
                 project: project?.id,
-                baseScale: project?.scale,
-                runtimeScale,
-                verticalOffset: project?.verticalOffset,
+                modelUrl: project?.modelUrl,
+                markerImage: project?.placement.markerImage,
+                markerPattern: MARKER_PATTERN_URL,
+                placement: project?.placement,
                 userAgent: navigator.userAgent
               },
               null,
