@@ -1,4 +1,5 @@
 import Link from "next/link";
+import QRCode from "qrcode";
 import { PrintButton } from "../PrintButton";
 import { createDefaultMarker } from "@/lib/placement";
 import { BlobConfigurationError, loadProject } from "@/lib/projects";
@@ -14,12 +15,14 @@ export default async function ProjectMarkerPage({
   let error = "";
   let projectName = projectId;
   let marker = createDefaultMarker();
+  let arUrl = `https://q-rcode-ar.vercel.app/ar/project/${projectId}`;
 
   try {
     const project = await loadProject(projectId);
     if (project) {
       projectName = project.name;
       marker = project.marker;
+      arUrl = project.arUrl;
     } else {
       error = "Project not found. Showing the default marker board.";
     }
@@ -27,8 +30,9 @@ export default async function ProjectMarkerPage({
     error =
       caught instanceof BlobConfigurationError || caught instanceof Error
         ? caught.message
-        : "Unable to load project marker settings.";
+      : "Unable to load project marker settings.";
   }
+  const qrDataUrl = await QRCode.toDataURL(arUrl, { margin: 1, width: 260 });
 
   return (
     <main className="min-h-screen bg-white px-5 py-6 text-black">
@@ -52,17 +56,32 @@ export default async function ProjectMarkerPage({
         <aside className="no-print rounded-xl border border-neutral-200 bg-neutral-50 p-5">
           <p className="text-sm font-bold uppercase tracking-[0.2em] text-neutral-500">Project marker</p>
           <h1 className="mt-3 text-4xl font-black">{projectName}</h1>
+          <div className="mt-5 rounded-lg border border-neutral-200 bg-white p-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={qrDataUrl} alt={`QR code for ${projectName} AR project`} className="mx-auto w-52" />
+          </div>
           <div className="mt-5 space-y-4 text-base leading-7 text-neutral-700">
             <p>
               This marker page uses the project marker settings saved in Vercel Blob.
             </p>
             <p>
               Physical size: <strong>{marker.widthMm}mm x {marker.heightMm}mm</strong>.
+              Print at <strong>100% scale</strong> with no browser fit-to-page resizing.
             </p>
             <p>
               Style: <strong>{marker.styleId}</strong>. Origin is the marker center;
               X is left/right, Z is forward/back, and Y is vertical height.
             </p>
+            <div>
+              <p className="font-bold text-neutral-900">Export presets planned</p>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-sm font-semibold">
+                {["A4", "A3", "A2", "A1", "A0", "2A0", "4A0", "Custom mm", "16:9", "16:10", "Full HD", "4K", "8K", "Custom px"].map((item) => (
+                  <span key={item} className="rounded-md border border-neutral-200 bg-white px-3 py-2">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
             {error ? (
               <p className="rounded-lg border border-red-200 bg-red-50 p-3 font-semibold text-red-900">
                 {error}

@@ -1,4 +1,4 @@
-import { ViewerClient } from "../../[id]/ViewerClient";
+import { ProjectViewerClient } from "./ProjectViewerClient";
 
 export default async function ProjectViewerPage({
   params
@@ -6,5 +6,5 @@ export default async function ProjectViewerPage({
   params: Promise<{ projectId: string }>;
 }) {
   const { projectId } = await params;
-  return <ViewerClient id={projectId} />;
+  return <ProjectViewerClient projectId={projectId} />;
 }

@@ -1,10 +1,28 @@
 "use client";
 
+import { upload } from "@vercel/blob/client";
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
+import { SceneThreeViewport, type TransformMode } from "@/components/SceneThreeViewport";
+import { createDefaultPlacement } from "@/lib/placement";
+import { fitModelToMarker, roundForStorage, type SceneScaleMetrics } from "@/lib/scene-transform";
 import type { ProjectMetadata, ScaleMode, SceneMetadata } from "@/lib/projects";
 
+type UploadProgress = {
+  loaded?: number;
+  total?: number;
+  percentage?: number;
+};
+
+type UploadStage = "idle" | "uploading" | "saving";
+
+type UploadRouteResponse = {
+  error?: string;
+};
+
+const MAX_GLB_SIZE_BYTES = 500 * 1024 * 1024;
+const MULTIPART_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const SCALE_PRESETS = [50, 100, 200, 500, 1000];
 
 export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
@@ -12,37 +30,28 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     typeof window === "undefined" ? "" : window.sessionStorage.getItem("adminPassword") || ""
   );
   const [project, setProject] = useState<ProjectMetadata | null>(null);
-  const [draft, setDraft] = useState<ProjectMetadata | null>(null);
+  const [selectedSceneId, setSelectedSceneId] = useState("");
   const [newSceneName, setNewSceneName] = useState("");
+  const [newSceneFile, setNewSceneFile] = useState<File | null>(null);
+  const [replaceFile, setReplaceFile] = useState<File | null>(null);
+  const [transformMode, setTransformMode] = useState<TransformMode>("translate");
+  const [metrics, setMetrics] = useState<SceneScaleMetrics | null>(null);
   const [status, setStatus] = useState("Loading project...");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [uploadStage, setUploadStage] = useState<UploadStage>("idle");
+  const [uploadProgress, setUploadProgress] = useState(0);
 
-  const activeScene = useMemo(() => {
-    if (!draft) return null;
+  const selectedScene = useMemo(() => {
+    if (!project) return null;
     return (
-      draft.scenes.find((scene) => scene.id === draft.activeSceneId) ||
-      draft.scenes[0] ||
+      project.scenes.find((scene) => scene.id === selectedSceneId) ||
+      project.scenes.find((scene) => scene.id === project.activeSceneId) ||
+      project.scenes[0] ||
       null
     );
-  }, [draft]);
-
-  const loadProject = useCallback(async () => {
-    const response = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
-    const result = (await response.json()) as {
-      project?: ProjectMetadata;
-      error?: string;
-    };
-
-    if (!response.ok || !result.project) {
-      throw new Error(result.error || "Project not found.");
-    }
-
-    setError("");
-    setProject(result.project);
-    setDraft(result.project);
-    setStatus("Project loaded.");
-  }, [projectId]);
+  }, [project, selectedSceneId]);
+  const working = busy || uploadStage !== "idle";
 
   useEffect(() => {
     let cancelled = false;
@@ -63,7 +72,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
         setError("");
         setProject(result.project);
-        setDraft(result.project);
+        setSelectedSceneId(result.project.activeSceneId || result.project.scenes[0]?.id || "");
         setStatus("Project loaded.");
       } catch (caught) {
         if (cancelled) return;
@@ -79,9 +88,20 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
-  async function saveProject(event?: FormEvent) {
-    event?.preventDefault();
-    if (!draft) return;
+  const handleViewportStatus = useCallback((nextStatus: string) => {
+    setStatus(nextStatus);
+  }, []);
+
+  const handleMetricsChange = useCallback((nextMetrics: SceneScaleMetrics | null) => {
+    setMetrics(nextMetrics);
+  }, []);
+
+  const handleSceneTransformChange = useCallback((nextScene: SceneMetadata) => {
+    updateScene(nextScene.id, () => nextScene);
+  }, []);
+
+  async function saveProject(nextProject = project, nextStatus = "Project saved.") {
+    if (!nextProject) return null;
 
     setBusy(true);
     setError("");
@@ -93,10 +113,10 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           password,
-          name: draft.name,
-          marker: draft.marker,
-          scenes: draft.scenes,
-          activeSceneId: draft.activeSceneId
+          name: nextProject.name,
+          marker: nextProject.marker,
+          scenes: nextProject.scenes,
+          activeSceneId: nextProject.activeSceneId
         })
       });
       const result = (await response.json()) as {
@@ -110,50 +130,113 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
       window.sessionStorage.setItem("adminPassword", password);
       setProject(result.project);
-      setDraft(result.project);
-      setStatus("Project saved.");
+      setSelectedSceneId((current) => current || result.project?.activeSceneId || "");
+      setStatus(nextStatus);
+      return result.project;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to save project.");
       setStatus("Save failed.");
+      return null;
     } finally {
       setBusy(false);
     }
   }
 
-  async function addScene(event: FormEvent) {
+  async function createScene(event: FormEvent) {
     event.preventDefault();
-    setBusy(true);
-    setError("");
-    setStatus("Adding scene placeholder...");
 
     try {
+      if (!newSceneFile) {
+        throw new Error("Choose a .glb file for the new scene.");
+      }
+
+      const sceneName = newSceneName.trim() || newSceneFile.name.replace(/\.glb$/i, "");
+      setUploadStage("uploading");
+      setUploadProgress(0);
+      setError("");
+      setStatus("Uploading scene GLB...");
+
+      const blob = await uploadGlb(newSceneFile, password, (progress) => setUploadProgress(progress));
+      setUploadStage("saving");
+      setStatus("Saving scene...");
+
       const response = await fetch(`/api/projects/${projectId}/scenes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           password,
-          name: newSceneName || `Scene ${(draft?.scenes.length || 0) + 1}`
+          name: sceneName,
+          modelUrl: blob.url,
+          modelPathname: blob.pathname,
+          modelSize: newSceneFile.size,
+          scaleMode: "fit",
+          normalizedScale: 1,
+          architecturalScale: 100
         })
       });
       const result = (await response.json()) as {
         project?: ProjectMetadata;
+        scene?: SceneMetadata;
         error?: string;
       };
 
-      if (!response.ok || !result.project) {
+      if (!response.ok || !result.project || !result.scene) {
         throw new Error(result.error || "Unable to add scene.");
       }
 
       window.sessionStorage.setItem("adminPassword", password);
       setProject(result.project);
-      setDraft(result.project);
+      setSelectedSceneId(result.scene.id);
       setNewSceneName("");
-      setStatus("Scene placeholder added.");
+      setNewSceneFile(null);
+      setUploadProgress(100);
+      setStatus("Scene added.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to add scene.");
       setStatus("Add scene failed.");
     } finally {
-      setBusy(false);
+      setUploadStage("idle");
+    }
+  }
+
+  async function replaceSceneModel(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedScene || !project) return;
+
+    try {
+      if (!replaceFile) {
+        throw new Error("Choose a .glb file.");
+      }
+
+      setUploadStage("uploading");
+      setUploadProgress(0);
+      setError("");
+      setStatus("Uploading replacement GLB...");
+
+      const blob = await uploadGlb(replaceFile, password, (progress) => setUploadProgress(progress));
+      const updatedProject = updateSceneInProject(project, selectedScene.id, (scene) => ({
+        ...scene,
+        name: scene.name || replaceFile.name.replace(/\.glb$/i, ""),
+        modelUrl: blob.url,
+        modelPathname: blob.pathname,
+        modelSize: replaceFile.size,
+        scaleMode: scene.scaleMode || "fit",
+        normalizedScale: scene.normalizedScale || 1,
+        architecturalScale: scene.architecturalScale || 100,
+        placement: scene.placement || createDefaultPlacement(1, 0)
+      }));
+
+      setUploadStage("saving");
+      setStatus("Saving scene model...");
+      setProject(updatedProject);
+      setReplaceFile(null);
+      await saveProject(updatedProject, "Scene model saved.");
+      setUploadProgress(100);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to upload scene model.");
+      setStatus("Upload failed.");
+    } finally {
+      setUploadStage("idle");
     }
   }
 
@@ -179,7 +262,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
       window.sessionStorage.setItem("adminPassword", password);
       setProject(result.project);
-      setDraft(result.project);
+      setSelectedSceneId(sceneId);
       setStatus("Active scene updated.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to set active scene.");
@@ -189,334 +272,570 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     }
   }
 
-  function updateDraft(updater: (current: ProjectMetadata) => ProjectMetadata) {
-    setDraft((current) => (current ? updater(current) : current));
+  function updateProjectName(name: string) {
+    setProject((current) => (current ? { ...current, name } : current));
   }
 
-  function updateMarker(field: "styleId" | "widthMm" | "heightMm", value: string) {
-    updateDraft((current) => ({
-      ...current,
-      marker: {
-        ...current.marker,
-        [field]: field === "styleId" ? value : parsePositiveDecimal(value, current.marker[field])
+  function updateScene(sceneId: string, updater: (scene: SceneMetadata) => SceneMetadata) {
+    setProject((current) => (current ? updateSceneInProject(current, sceneId, updater) : current));
+  }
+
+  function updateSceneNumber(
+    sceneId: string,
+    field: "normalizedScale" | "architecturalScale",
+    value: string
+  ) {
+    updateScene(sceneId, (scene) => ({
+      ...scene,
+      [field]: parsePositiveDecimal(value, scene[field])
+    }));
+  }
+
+  function updatePlacementNumber(
+    sceneId: string,
+    group: "position" | "rotation",
+    field: "x" | "y" | "z",
+    value: string
+  ) {
+    updateScene(sceneId, (scene) => ({
+      ...scene,
+      placement: {
+        ...scene.placement,
+        [group]: {
+          ...scene.placement[group],
+          [field]: parseDecimal(value, scene.placement[group][field])
+        }
       }
     }));
   }
 
-  function updateScene(sceneId: string, updater: (scene: SceneMetadata) => SceneMetadata) {
-    updateDraft((current) => ({
-      ...current,
-      scenes: current.scenes.map((scene) => (scene.id === sceneId ? updater(scene) : scene))
+  function centerScene(sceneId: string) {
+    updateScene(sceneId, (scene) => ({
+      ...scene,
+      placement: {
+        ...scene.placement,
+        position: { ...scene.placement.position, x: 0, z: 0 }
+      }
+    }));
+  }
+
+  function resetScene(sceneId: string) {
+    updateScene(sceneId, (scene) => ({
+      ...scene,
+      scaleMode: "fit",
+      normalizedScale: 1,
+      architecturalScale: 100,
+      placement: createDefaultPlacement(1, 0)
+    }));
+  }
+
+  function rotateScene(sceneId: string, axis: "x" | "y" | "z") {
+    updateScene(sceneId, (scene) => ({
+      ...scene,
+      placement: {
+        ...scene.placement,
+        rotation: {
+          ...scene.placement.rotation,
+          [axis]: roundForStorage(scene.placement.rotation[axis] + 90)
+        }
+      }
+    }));
+  }
+
+  function setScaleMode(sceneId: string, scaleMode: ScaleMode) {
+    updateScene(sceneId, (scene) => ({
+      ...scene,
+      scaleMode
     }));
   }
 
   return (
-    <main className="min-h-screen px-5 py-6 text-[var(--foreground)]">
-      <div className="mx-auto max-w-7xl">
-        <nav className="mb-8 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] pb-5">
-          <div className="flex flex-wrap gap-2">
-            <Link className="button-secondary" href="/admin/dashboard">
-              Dashboard
-            </Link>
-            <Link className="button-secondary" href="/admin">
-              Upload
-            </Link>
-          </div>
-          <button
-            type="button"
-            className="button-secondary"
-            disabled={busy}
-            onClick={() => loadProject()}
-          >
-            Refresh
-          </button>
-        </nav>
-
-        <header className="grid gap-4 md:grid-cols-[1fr_auto] md:items-start">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--accent-dark)]">
-              Project workspace
-            </p>
-            <h1 className="mt-2 text-4xl font-black tracking-tight text-[var(--ink)]">
-              {draft?.name || projectId}
+    <main className="h-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
+      <header className="flex h-16 items-center justify-between gap-3 border-b border-[var(--line)] bg-white px-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <Link className="button-secondary shrink-0" href="/admin/dashboard">
+            Dashboard
+          </Link>
+          <div className="min-w-0">
+            <h1 className="truncate text-lg font-black text-[var(--ink)]">
+              {project?.name || projectId}
             </h1>
-            <p className="mt-3 max-w-3xl text-base leading-7 text-[var(--muted)]">
-              First architecture pass: project JSON, scenes, active scene selection,
-              marker settings, scale settings, and public project links.
-            </p>
+            <p className="truncate text-xs font-semibold text-[var(--muted)]">{status}</p>
           </div>
-          {project ? (
+        </div>
+
+        {project ? (
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            <Link className="button-secondary" href={project.markerUrl}>
+              Print / Export Marker
+            </Link>
+            <CopyButton value={project.arUrl} label="Copy AR link" />
+            <CopyButton value={project.viewUrl} label="Copy Viewer link" />
             <a className="button-secondary" href={`/api/projects/${project.id}/export`}>
               Export JSON
             </a>
-          ) : null}
-        </header>
-
-        <label className="mt-6 block max-w-md text-sm font-semibold text-[var(--ink)]">
-          Admin password
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
-            autoComplete="current-password"
-          />
-        </label>
-
-        {draft ? (
-          <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_420px]">
-            <form noValidate onSubmit={saveProject} className="space-y-6">
-              <section className="rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm">
-                <div className="grid gap-4 md:grid-cols-2">
-                  <label className="text-sm font-semibold text-[var(--ink)] md:col-span-2">
-                    Project name
-                    <input
-                      value={draft.name}
-                      onChange={(event) =>
-                        updateDraft((current) => ({ ...current, name: event.target.value }))
-                      }
-                      className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
-                    />
-                  </label>
-                  <label className="text-sm font-semibold text-[var(--ink)]">
-                    Marker style
-                    <select
-                      value={draft.marker.styleId}
-                      onChange={(event) => updateMarker("styleId", event.target.value)}
-                      className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)]"
-                    >
-                      <option value="technical-grid">Technical grid</option>
-                      <option value="minimal-high-contrast">Minimal high contrast</option>
-                      <option value="architectural-presentation-board">Architectural presentation board</option>
-                    </select>
-                  </label>
-                  <div className="grid grid-cols-2 gap-3">
-                    <NumberField
-                      label="Width mm"
-                      value={draft.marker.widthMm}
-                      onChange={(value) => updateMarker("widthMm", value)}
-                    />
-                    <NumberField
-                      label="Height mm"
-                      value={draft.marker.heightMm}
-                      onChange={(value) => updateMarker("heightMm", value)}
-                    />
-                  </div>
-                </div>
-                <div className="mt-4 rounded-lg bg-[var(--soft)] p-4 text-sm leading-6 text-[var(--muted)]">
-                  Origin is marker center. X moves left/right, Z moves forward/back on the marker,
-                  and Y is vertical height above the marker. Print/export presets are modeled here;
-                  full PDF/vector generation comes later.
-                </div>
-              </section>
-
-              <section className="rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h2 className="text-xl font-black text-[var(--ink)]">Scenes</h2>
-                    <p className="mt-1 text-sm text-[var(--muted)]">
-                      Active scene powers the QR project link and old single-model fallback routes.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-4 grid gap-3">
-                  {draft.scenes.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-[var(--line)] bg-[var(--soft)] p-5 text-sm text-[var(--muted)]">
-                      No scenes yet. Add a placeholder or create a project from the upload page.
-                    </div>
-                  ) : null}
-
-                  {draft.scenes.map((scene) => (
-                    <article key={scene.id} className="rounded-lg border border-[var(--line)] p-4">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <h3 className="text-lg font-black text-[var(--ink)]">{scene.name}</h3>
-                          <p className="mt-1 break-all text-sm text-[var(--muted)]">
-                            {scene.modelPathname || "GLB model placeholder"}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          className={scene.id === draft.activeSceneId ? "focus-ring rounded-lg bg-[var(--ink)] px-3 py-2 text-sm font-semibold text-white" : "button-secondary"}
-                          disabled={busy || scene.id === draft.activeSceneId}
-                          onClick={() => setActiveScene(scene.id)}
-                        >
-                          {scene.id === draft.activeSceneId ? "Active" : "Set active"}
-                        </button>
-                      </div>
-
-                      <div className="mt-4 grid gap-3 md:grid-cols-3">
-                        <label className="text-sm font-semibold text-[var(--ink)]">
-                          Scale mode
-                          <select
-                            value={scene.scaleMode}
-                            onChange={(event) =>
-                              updateScene(scene.id, (current) => ({
-                                ...current,
-                                scaleMode: event.target.value as ScaleMode
-                              }))
-                            }
-                            className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
-                          >
-                            <option value="fit">Fit to playground</option>
-                            <option value="architectural">Architectural scale</option>
-                          </select>
-                        </label>
-                        <NumberField
-                          label="Normalized scale"
-                          value={scene.normalizedScale}
-                          onChange={(value) =>
-                            updateScene(scene.id, (current) => ({
-                              ...current,
-                              normalizedScale: parsePositiveDecimal(value, current.normalizedScale)
-                            }))
-                          }
-                        />
-                        <label className="text-sm font-semibold text-[var(--ink)]">
-                          Architectural scale
-                          <select
-                            value={SCALE_PRESETS.includes(scene.architecturalScale) ? String(scene.architecturalScale) : "custom"}
-                            onChange={(event) => {
-                              if (event.target.value === "custom") return;
-                              updateScene(scene.id, (current) => ({
-                                ...current,
-                                architecturalScale: Number(event.target.value)
-                              }));
-                            }}
-                            className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
-                          >
-                            {SCALE_PRESETS.map((scale) => (
-                              <option key={scale} value={scale}>
-                                1:{scale}
-                              </option>
-                            ))}
-                            <option value="custom">Custom</option>
-                          </select>
-                        </label>
-                      </div>
-                      <div className="mt-3 max-w-xs">
-                        <NumberField
-                          label="Custom architectural scale"
-                          value={scene.architecturalScale}
-                          onChange={(value) =>
-                            updateScene(scene.id, (current) => ({
-                              ...current,
-                              architecturalScale: parsePositiveDecimal(value, current.architecturalScale)
-                            }))
-                          }
-                        />
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </section>
-
-              <button
-                type="submit"
-                disabled={busy}
-                className="focus-ring rounded-lg bg-[var(--accent)] px-5 py-3 font-semibold text-white hover:bg-[var(--accent-dark)] disabled:opacity-60"
-              >
-                {busy ? "Saving..." : "Save workspace"}
-              </button>
-            </form>
-
-            <aside className="space-y-6">
-              <section className="rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm">
-                <h2 className="text-xl font-black text-[var(--ink)]">Project links</h2>
-                <div className="mt-4 space-y-4">
-                  <LinkRow label="AR project URL" value={draft.arUrl} />
-                  <LinkRow label="Fallback viewer" value={draft.viewUrl} />
-                  <LinkRow label="Marker board" value={draft.markerUrl} />
-                  <LinkRow label="Legacy AR URL" value={draft.urls.legacyArUrl} />
-                </div>
-                <div className="mt-4 grid gap-2">
-                  <Link className="focus-ring rounded-lg bg-[var(--ink)] px-4 py-3 text-center font-semibold text-white hover:bg-black" href={draft.arUrl}>
-                    Open project AR
-                  </Link>
-                  <Link className="button-secondary text-center" href={draft.viewUrl}>
-                    Open project viewer
-                  </Link>
-                  <Link className="button-secondary text-center" href={draft.markerUrl}>
-                    Open marker page
-                  </Link>
-                </div>
-              </section>
-
-              <form onSubmit={addScene} className="rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm">
-                <h2 className="text-xl font-black text-[var(--ink)]">Add scene placeholder</h2>
-                <label className="mt-4 block text-sm font-semibold text-[var(--ink)]">
-                  Scene name
-                  <input
-                    value={newSceneName}
-                    onChange={(event) => setNewSceneName(event.target.value)}
-                    className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
-                    placeholder={`Scene ${draft.scenes.length + 1}`}
-                  />
-                </label>
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className="focus-ring mt-4 w-full rounded-lg bg-[var(--ink)] px-4 py-3 font-semibold text-white hover:bg-black disabled:opacity-60"
-                >
-                  Add placeholder
-                </button>
-              </form>
-
-              <section className="rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm">
-                <h2 className="text-xl font-black text-[var(--ink)]">Scale architecture</h2>
-                <div className="mt-4 space-y-3 text-sm leading-6 text-[var(--muted)]">
-                  <p>
-                    GLB units are treated as meters. Fit mode uses normalized scale as a
-                    multiplier over a future baseFitScale measurement.
-                  </p>
-                  <p>
-                    Architectural mode stores ratios like 1:100, so a 100 m model displays
-                    around 1 m before final placement transforms.
-                  </p>
-                </div>
-                {activeScene ? (
-                  <div className="mt-4 rounded-lg bg-[var(--soft)] p-3 text-sm">
-                    Active scene scale: <strong>{activeScene.scaleMode}</strong>
-                  </div>
-                ) : null}
-              </section>
-
-              <section className="rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm">
-                <h2 className="text-xl font-black text-[var(--ink)]">Marker export placeholders</h2>
-                <div className="mt-4 grid grid-cols-2 gap-2 text-sm font-semibold text-[var(--muted)]">
-                  {["A4", "A3", "A2", "A1", "A0", "2A0", "4A0", "16:9", "16:10", "1:1", "Full HD", "4K", "8K", "Custom"].map((item) => (
-                    <span key={item} className="rounded-md border border-[var(--line)] bg-[var(--soft)] px-3 py-2">
-                      {item}
-                    </span>
-                  ))}
-                </div>
-              </section>
-            </aside>
           </div>
         ) : null}
+      </header>
 
-        {error ? (
-          <p className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-900">
-            {error}
-          </p>
-        ) : null}
-        <p className="mt-4 text-sm font-semibold text-[var(--muted)]">{status}</p>
+      <div className="grid h-[calc(100vh-4rem)] grid-cols-[300px_minmax(0,1fr)_360px]">
+        <aside className="overflow-y-auto border-r border-[var(--line)] bg-white p-4">
+          <label className="block text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">
+            Project name
+            <input
+              value={project?.name || ""}
+              onChange={(event) => updateProjectName(event.target.value)}
+              className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-sm font-semibold normal-case tracking-normal text-[var(--ink)] shadow-inner"
+            />
+          </label>
+
+          <label className="mt-4 block text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">
+            Admin password
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-sm font-semibold normal-case tracking-normal text-[var(--ink)] shadow-inner"
+              autoComplete="current-password"
+            />
+          </label>
+
+          <section className="mt-6">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-black uppercase tracking-[0.14em] text-[var(--ink)]">Scenes</h2>
+              <span className="text-xs font-semibold text-[var(--muted)]">{project?.scenes.length || 0}</span>
+            </div>
+
+            <div className="space-y-2">
+              {project?.scenes.map((scene) => (
+                <button
+                  key={scene.id}
+                  type="button"
+                  className={
+                    scene.id === selectedScene?.id
+                      ? "focus-ring w-full rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-3 text-left"
+                      : "focus-ring w-full rounded-lg border border-[var(--line)] bg-white p-3 text-left hover:bg-[var(--soft)]"
+                  }
+                  onClick={() => setSelectedSceneId(scene.id)}
+                >
+                  <span className="block truncate text-sm font-black text-[var(--ink)]">{scene.name}</span>
+                  <span className="mt-1 block truncate text-xs text-[var(--muted)]">
+                    {scene.id === project.activeSceneId ? "Active scene" : scene.modelPathname || "No GLB"}
+                  </span>
+                </button>
+              ))}
+
+              {project && project.scenes.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-[var(--line)] bg-[var(--soft)] p-3 text-sm leading-6 text-[var(--muted)]">
+                  No scenes yet. Add a GLB scene below.
+                </div>
+              ) : null}
+            </div>
+          </section>
+
+          <form onSubmit={createScene} className="mt-6 rounded-xl border border-[var(--line)] bg-[var(--soft)] p-3">
+            <h3 className="text-sm font-black text-[var(--ink)]">Add scene</h3>
+            <input
+              value={newSceneName}
+              onChange={(event) => setNewSceneName(event.target.value)}
+              className="focus-ring mt-3 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm text-[var(--ink)]"
+              placeholder="Scene name"
+            />
+            <input
+              type="file"
+              accept=".glb,model/gltf-binary,application/octet-stream"
+              onChange={(event) => setNewSceneFile(event.target.files?.[0] || null)}
+              className="focus-ring mt-3 w-full rounded-lg border border-dashed border-[var(--line)] bg-white px-3 py-3 text-xs text-[var(--ink)] file:mr-3 file:rounded-md file:border-0 file:bg-[var(--ink)] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-white"
+            />
+            <button
+              type="submit"
+              disabled={working || !newSceneFile}
+              className="focus-ring mt-3 w-full rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white hover:bg-[var(--accent-dark)] disabled:opacity-60"
+            >
+              {uploadStage === "uploading" ? `Uploading ${uploadProgress}%` : "Upload and add scene"}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            disabled={working || !project}
+            className="focus-ring mt-4 w-full rounded-lg bg-[var(--ink)] px-4 py-3 text-sm font-semibold text-white hover:bg-black disabled:opacity-60"
+            onClick={() => saveProject(project, "Project saved.")}
+          >
+            Save project
+          </button>
+        </aside>
+
+        <section className="flex min-w-0 flex-col">
+          <div className="flex h-14 items-center justify-between border-b border-[var(--line)] bg-white px-4">
+            <div className="flex rounded-lg border border-[var(--line)] bg-[var(--soft)] p-1">
+              {(["translate", "rotate", "scale"] as TransformMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={
+                    transformMode === mode
+                      ? "rounded-md bg-[var(--ink)] px-3 py-2 text-sm font-semibold text-white"
+                      : "rounded-md px-3 py-2 text-sm font-semibold text-[var(--muted)] hover:bg-white"
+                  }
+                  onClick={() => setTransformMode(mode)}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
+            {metrics ? (
+              <p className="text-sm font-semibold text-[var(--muted)]">
+                Model {formatNumber(metrics.modelWidthM)}m x {formatNumber(metrics.modelDepthM)}m - scale {formatNumber(metrics.displayedScale)}
+              </p>
+            ) : null}
+          </div>
+          <SceneThreeViewport
+            key={`${selectedScene?.id || "empty"}-${selectedScene?.modelUrl || "none"}`}
+            scene={selectedScene}
+            marker={project?.marker || defaultMarkerForRender()}
+            editable
+            transformMode={transformMode}
+            className="flex-1"
+            onSceneChange={handleSceneTransformChange}
+            onMetricsChange={handleMetricsChange}
+            onStatusChange={handleViewportStatus}
+          />
+        </section>
+
+        <aside className="overflow-y-auto border-l border-[var(--line)] bg-white p-4">
+          {selectedScene && project ? (
+            <SceneInspector
+              busy={working}
+              project={project}
+              scene={selectedScene}
+              replaceFile={replaceFile}
+              uploadProgress={uploadProgress}
+              uploadStage={uploadStage}
+              onReplaceFile={setReplaceFile}
+              onReplaceModel={replaceSceneModel}
+              onSetActive={() => setActiveScene(selectedScene.id)}
+              onSave={() => saveProject(project, "Scene saved.")}
+              onSceneNameChange={(name) => updateScene(selectedScene.id, (scene) => ({ ...scene, name }))}
+              onScaleModeChange={(scaleMode) => setScaleMode(selectedScene.id, scaleMode)}
+              onNormalizedScaleChange={(value) => updateSceneNumber(selectedScene.id, "normalizedScale", value)}
+              onArchitecturalScaleChange={(value) => updateSceneNumber(selectedScene.id, "architecturalScale", value)}
+              onPositionChange={(axis, value) => updatePlacementNumber(selectedScene.id, "position", axis, value)}
+              onRotationChange={(axis, value) => updatePlacementNumber(selectedScene.id, "rotation", axis, value)}
+              onReset={() => resetScene(selectedScene.id)}
+              onCenter={() => centerScene(selectedScene.id)}
+              onFit={() => updateScene(selectedScene.id, fitModelToMarker)}
+              onRotate={(axis) => rotateScene(selectedScene.id, axis)}
+            />
+          ) : (
+            <div className="rounded-xl border border-dashed border-[var(--line)] bg-[var(--soft)] p-5 text-sm leading-6 text-[var(--muted)]">
+              Select or add a scene to edit placement, scale, and model settings.
+            </div>
+          )}
+
+          {error ? (
+            <p className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-900">
+              {error}
+            </p>
+          ) : null}
+        </aside>
       </div>
     </main>
   );
 }
 
-function LinkRow({ label, value }: { label: string; value: string }) {
+function SceneInspector({
+  busy,
+  project,
+  scene,
+  replaceFile,
+  uploadProgress,
+  uploadStage,
+  onReplaceFile,
+  onReplaceModel,
+  onSetActive,
+  onSave,
+  onSceneNameChange,
+  onScaleModeChange,
+  onNormalizedScaleChange,
+  onArchitecturalScaleChange,
+  onPositionChange,
+  onRotationChange,
+  onReset,
+  onCenter,
+  onFit,
+  onRotate
+}: {
+  busy: boolean;
+  project: ProjectMetadata;
+  scene: SceneMetadata;
+  replaceFile: File | null;
+  uploadProgress: number;
+  uploadStage: UploadStage;
+  onReplaceFile: (file: File | null) => void;
+  onReplaceModel: (event: FormEvent) => void;
+  onSetActive: () => void;
+  onSave: () => void;
+  onSceneNameChange: (name: string) => void;
+  onScaleModeChange: (mode: ScaleMode) => void;
+  onNormalizedScaleChange: (value: string) => void;
+  onArchitecturalScaleChange: (value: string) => void;
+  onPositionChange: (axis: "x" | "y" | "z", value: string) => void;
+  onRotationChange: (axis: "x" | "y" | "z", value: string) => void;
+  onReset: () => void;
+  onCenter: () => void;
+  onFit: () => void;
+  onRotate: (axis: "x" | "y" | "z") => void;
+}) {
   return (
-    <div>
-      <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">{label}</p>
-      <div className="mt-1 flex items-start gap-2">
-        <p className="min-w-0 flex-1 break-all text-sm">{value}</p>
-        <CopyButton value={value} />
-      </div>
+    <div className="space-y-5">
+      <section>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Scene inspector</p>
+            <h2 className="mt-1 text-xl font-black text-[var(--ink)]">{scene.name}</h2>
+          </div>
+          <button
+            type="button"
+            className={scene.id === project.activeSceneId ? "focus-ring rounded-lg bg-[var(--ink)] px-3 py-2 text-sm font-semibold text-white" : "button-secondary"}
+            disabled={busy || scene.id === project.activeSceneId}
+            onClick={onSetActive}
+          >
+            {scene.id === project.activeSceneId ? "Active" : "Set active"}
+          </button>
+        </div>
+
+        <label className="mt-4 block text-sm font-semibold text-[var(--ink)]">
+          Scene name
+          <input
+            value={scene.name}
+            onChange={(event) => onSceneNameChange(event.target.value)}
+            className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)] shadow-inner"
+          />
+        </label>
+      </section>
+
+      <form onSubmit={onReplaceModel} className="rounded-xl border border-[var(--line)] bg-[var(--soft)] p-3">
+        <h3 className="text-sm font-black text-[var(--ink)]">
+          {scene.modelUrl ? "Replace GLB" : "Upload GLB"}
+        </h3>
+        <p className="mt-2 break-all text-xs leading-5 text-[var(--muted)]">
+          {scene.modelPathname || "No model uploaded for this scene."}
+        </p>
+        <input
+          type="file"
+          accept=".glb,model/gltf-binary,application/octet-stream"
+          onChange={(event) => onReplaceFile(event.target.files?.[0] || null)}
+          className="focus-ring mt-3 w-full rounded-lg border border-dashed border-[var(--line)] bg-white px-3 py-3 text-xs text-[var(--ink)] file:mr-3 file:rounded-md file:border-0 file:bg-[var(--ink)] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-white"
+        />
+        <button
+          type="submit"
+          disabled={busy || !replaceFile}
+          className="focus-ring mt-3 w-full rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white hover:bg-[var(--accent-dark)] disabled:opacity-60"
+        >
+          {uploadStage === "uploading" ? `Uploading ${uploadProgress}%` : "Upload GLB"}
+        </button>
+      </form>
+
+      <section className="rounded-xl border border-[var(--line)] p-3">
+        <h3 className="text-sm font-black text-[var(--ink)]">Position (mm)</h3>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {(["x", "y", "z"] as const).map((axis) => (
+            <NumberField
+              key={axis}
+              label={axis.toUpperCase()}
+              value={scene.placement.position[axis]}
+              onChange={(value) => onPositionChange(axis, value)}
+            />
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-[var(--line)] p-3">
+        <h3 className="text-sm font-black text-[var(--ink)]">Rotation (degrees)</h3>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {(["x", "y", "z"] as const).map((axis) => (
+            <NumberField
+              key={axis}
+              label={axis.toUpperCase()}
+              value={scene.placement.rotation[axis]}
+              onChange={(value) => onRotationChange(axis, value)}
+            />
+          ))}
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {(["x", "y", "z"] as const).map((axis) => (
+            <button key={axis} type="button" className="button-secondary px-2" onClick={() => onRotate(axis)}>
+              +90 {axis.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-[var(--line)] p-3">
+        <h3 className="text-sm font-black text-[var(--ink)]">Scale</h3>
+        <label className="mt-3 block text-sm font-semibold text-[var(--ink)]">
+          Scale mode
+          <select
+            value={scene.scaleMode}
+            onChange={(event) => onScaleModeChange(event.target.value as ScaleMode)}
+            className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
+          >
+            <option value="fit">Fit to playground</option>
+            <option value="architectural">Architectural scale</option>
+          </select>
+        </label>
+        <NumberField
+          label={scene.scaleMode === "fit" ? "Normalized scale" : "Final multiplier"}
+          value={scene.normalizedScale}
+          onChange={onNormalizedScaleChange}
+        />
+        <label className="mt-3 block text-sm font-semibold text-[var(--ink)]">
+          Architectural preset
+          <select
+            value={SCALE_PRESETS.includes(scene.architecturalScale) ? String(scene.architecturalScale) : "custom"}
+            onChange={(event) => {
+              if (event.target.value !== "custom") onArchitecturalScaleChange(event.target.value);
+            }}
+            className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
+          >
+            {SCALE_PRESETS.map((scale) => (
+              <option key={scale} value={scale}>
+                1:{scale}
+              </option>
+            ))}
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+        <NumberField
+          label="Custom architectural scale"
+          value={scene.architecturalScale}
+          onChange={onArchitecturalScaleChange}
+        />
+        <p className="mt-3 text-xs leading-5 text-[var(--muted)]">
+          Fit mode computes a base scale from the GLB X/Z footprint and marker size.
+          Architectural mode displays real-world meters at the selected drawing scale.
+        </p>
+      </section>
+
+      <section className="grid grid-cols-2 gap-2">
+        <button type="button" className="button-secondary" onClick={onReset}>
+          Reset
+        </button>
+        <button type="button" className="button-secondary" onClick={onCenter}>
+          Center
+        </button>
+        <button type="button" className="button-secondary" onClick={onFit}>
+          Fit playground
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          className="focus-ring rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white hover:bg-[var(--accent-dark)] disabled:opacity-60"
+          onClick={onSave}
+        >
+          Save scene
+        </button>
+      </section>
     </div>
   );
+}
+
+async function uploadGlb(
+  file: File,
+  password: string,
+  onProgress: (progress: number) => void
+) {
+  if (!file.name.toLowerCase().endsWith(".glb")) {
+    throw new Error("Only .glb files are allowed.");
+  }
+
+  if (file.size > MAX_GLB_SIZE_BYTES) {
+    throw new Error("Choose a GLB file that is 500 MB or smaller.");
+  }
+
+  const pathname = `models/${crypto.randomUUID()}.glb`;
+  const multipart = file.size >= MULTIPART_THRESHOLD_BYTES;
+  const clientPayload = JSON.stringify({ password });
+
+  try {
+    return await upload(pathname, file, {
+      access: "public",
+      handleUploadUrl: "/api/blob/upload",
+      clientPayload,
+      multipart,
+      contentType: getGlbContentType(file.type),
+      onUploadProgress: (event: UploadProgress) => {
+        if (typeof event.percentage === "number") {
+          onProgress(Math.round(event.percentage));
+          return;
+        }
+
+        if (event.loaded && event.total) {
+          onProgress(Math.round((event.loaded / event.total) * 100));
+        }
+      }
+    });
+  } catch (uploadError) {
+    throw await resolveBlobUploadError(uploadError, pathname, clientPayload, multipart);
+  }
+}
+
+async function resolveBlobUploadError(
+  uploadError: unknown,
+  pathname: string,
+  clientPayload: string,
+  multipart: boolean
+) {
+  const originalMessage =
+    uploadError instanceof Error ? uploadError.message : "Unable to upload this GLB file.";
+
+  if (!originalMessage.toLowerCase().includes("client token")) {
+    return uploadError instanceof Error ? uploadError : new Error(originalMessage);
+  }
+
+  try {
+    const response = await fetch("/api/blob/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "blob.generate-client-token",
+        payload: {
+          pathname,
+          multipart,
+          clientPayload
+        }
+      })
+    });
+    const result = await readJson<UploadRouteResponse>(response);
+
+    if (!response.ok && result?.error) {
+      return new Error(result.error);
+    }
+  } catch {
+    return new Error(originalMessage);
+  }
+
+  return new Error(originalMessage);
+}
+
+function updateSceneInProject(
+  project: ProjectMetadata,
+  sceneId: string,
+  updater: (scene: SceneMetadata) => SceneMetadata
+) {
+  return {
+    ...project,
+    scenes: project.scenes.map((scene) => (scene.id === sceneId ? updater(scene) : scene))
+  };
+}
+
+async function readJson<T>(response: Response) {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
 }
 
 function NumberField({
@@ -529,17 +848,39 @@ function NumberField({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="block text-sm font-semibold text-[var(--ink)]">
+    <label className="mt-3 block text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">
       {label}
       <input
         type="text"
         inputMode="decimal"
         value={formatNumber(value)}
         onChange={(event) => onChange(event.target.value)}
-        className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)] shadow-inner"
+        className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-semibold text-[var(--ink)] shadow-inner"
       />
     </label>
   );
+}
+
+function defaultMarkerForRender() {
+  return {
+    styleId: "technical-grid",
+    imageUrl: "/markers/playground.png",
+    patternUrl: "/markers/playground.patt",
+    widthMm: 1000,
+    heightMm: 700,
+    coordinateSystem: {
+      origin: "center of marker/playground",
+      xAxis: "left/right on marker",
+      yAxis: "vertical height above marker",
+      zAxis: "forward/back on marker",
+      units: "meters" as const
+    }
+  };
+}
+
+function parseDecimal(value: string, fallback: number) {
+  const parsed = Number(value.trim().replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function parsePositiveDecimal(value: string, fallback: number) {
@@ -548,5 +889,13 @@ function parsePositiveDecimal(value: string, fallback: number) {
 }
 
 function formatNumber(value: number) {
-  return Number.isInteger(value) ? String(value) : String(Math.round(value * 1000) / 1000);
+  return Number.isInteger(value) ? String(value) : String(roundForStorage(value));
+}
+
+function getGlbContentType(fileType: string) {
+  if (fileType === "model/gltf-binary" || fileType === "application/octet-stream") {
+    return fileType;
+  }
+
+  return "model/gltf-binary";
 }

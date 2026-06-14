@@ -1,5 +1,5 @@
-import { AdminClient } from "./AdminClient";
+import { AdminLoginClient } from "./AdminLoginClient";
 
 export default function AdminPage() {
-  return <AdminClient />;
+  return <AdminLoginClient />;
 }
