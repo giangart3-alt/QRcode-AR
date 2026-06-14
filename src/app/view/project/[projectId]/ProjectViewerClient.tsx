@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
 import { SceneThreeViewport } from "@/components/SceneThreeViewport";
+import { createMarkerSettings } from "@/lib/placement";
 import type { ProjectMetadata } from "@/lib/projects";
 import type { SceneScaleMetrics } from "@/lib/scene-transform";
 
@@ -133,20 +134,7 @@ function Info({ label, value }: { label: string; value: string }) {
 }
 
 function defaultMarkerForRender() {
-  return {
-    styleId: "technical-grid",
-    imageUrl: "/markers/playground.png",
-    patternUrl: "/markers/playground.patt",
-    widthMm: 1000,
-    heightMm: 700,
-    coordinateSystem: {
-      origin: "center of marker/playground",
-      xAxis: "left/right on marker",
-      yAxis: "vertical height above marker",
-      zAxis: "forward/back on marker",
-      units: "meters" as const
-    }
-  };
+  return createMarkerSettings();
 }
 
 function formatNumber(value: number) {

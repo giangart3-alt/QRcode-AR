@@ -3,8 +3,10 @@ export const MARKER_PATTERN_URL = "/markers/playground.patt";
 export const DEFAULT_MARKER_WIDTH_MM = 1000;
 export const DEFAULT_MARKER_HEIGHT_MM = 700;
 export const DEFAULT_MARKER_STYLE_ID = "technical-grid";
+export const DEFAULT_SCREEN_PHYSICAL_WIDTH_MM = 600;
 
 export type MarkerStyleId = "technical-grid" | "checker" | "minimal";
+export type MarkerOutputMode = "print" | "screen";
 
 export const MARKER_STYLES: Array<{ id: MarkerStyleId; label: string }> = [
   { id: "technical-grid", label: "Technical grid" },
@@ -31,10 +33,18 @@ export type PlacementMetadata = {
 
 export type MarkerSettings = {
   styleId: string;
+  outputMode: MarkerOutputMode;
+  presetLabel: string;
   imageUrl: string;
   patternUrl: string;
   widthMm: number;
   heightMm: number;
+  screen: {
+    widthPx: number;
+    heightPx: number;
+    physicalWidthMm: number;
+    physicalHeightMm: number;
+  } | null;
   coordinateSystem: {
     origin: string;
     xAxis: string;
@@ -51,8 +61,8 @@ export function createDefaultPlacement(
   return {
     position: {
       x: 0,
-      y: verticalOffset,
-      z: 0
+      y: 0,
+      z: verticalOffset
     },
     rotation: {
       x: 0,
@@ -69,18 +79,30 @@ export function createDefaultMarker(): MarkerSettings {
 
 export function createMarkerSettings(input?: Partial<MarkerSettings>): MarkerSettings {
   const styleId = normalizeMarkerStyleId(input?.styleId);
+  const outputMode = input?.outputMode === "screen" ? "screen" : "print";
+  const normalizedScreen = normalizeScreenSettings(input?.screen);
+  const screen = outputMode === "screen" ? normalizedScreen : null;
+  const widthMm = outputMode === "screen"
+    ? normalizedScreen.physicalWidthMm
+    : positiveNumber(input?.widthMm, DEFAULT_MARKER_WIDTH_MM);
+  const heightMm = outputMode === "screen"
+    ? normalizedScreen.physicalHeightMm
+    : positiveNumber(input?.heightMm, DEFAULT_MARKER_HEIGHT_MM);
 
   return {
     styleId,
+    outputMode,
+    presetLabel: input?.presetLabel || (outputMode === "screen" ? "Full HD" : "Custom mm"),
     imageUrl: markerImageUrlForStyle(styleId),
     patternUrl: MARKER_PATTERN_URL,
-    widthMm: positiveNumber(input?.widthMm, DEFAULT_MARKER_WIDTH_MM),
-    heightMm: positiveNumber(input?.heightMm, DEFAULT_MARKER_HEIGHT_MM),
+    widthMm,
+    heightMm,
+    screen,
     coordinateSystem: {
       origin: "center of marker/playground",
       xAxis: "left/right on marker",
-      yAxis: "vertical height above marker",
-      zAxis: "forward/back on marker",
+      yAxis: "forward/back on marker",
+      zAxis: "vertical height above marker",
       units: "meters"
     }
   };
@@ -114,27 +136,52 @@ export function normalizePlacement(
 export function normalizeMarker(marker: Partial<MarkerSettings> | null | undefined) {
   const fallback = createDefaultMarker();
   const styleId = normalizeMarkerStyleId(marker?.styleId);
+  const outputMode = marker?.outputMode === "screen" ? "screen" : "print";
+  const normalizedScreen = normalizeScreenSettings(marker?.screen);
+  const screen = outputMode === "screen" ? normalizedScreen : null;
 
   return {
     styleId,
+    outputMode,
+    presetLabel: marker?.presetLabel || fallback.presetLabel,
     imageUrl: markerImageUrlForStyle(styleId),
     patternUrl: marker?.patternUrl || fallback.patternUrl,
-    widthMm: positiveNumber(
-      marker?.widthMm ?? (marker as { markerWidthMm?: number } | null | undefined)?.markerWidthMm,
-      fallback.widthMm
-    ),
-    heightMm: positiveNumber(
-      marker?.heightMm ?? (marker as { markerHeightMm?: number } | null | undefined)?.markerHeightMm,
-      fallback.heightMm
-    ),
+    widthMm: outputMode === "screen"
+      ? normalizedScreen.physicalWidthMm
+      : positiveNumber(
+          marker?.widthMm ?? (marker as { markerWidthMm?: number } | null | undefined)?.markerWidthMm,
+          fallback.widthMm
+        ),
+    heightMm: outputMode === "screen"
+      ? normalizedScreen.physicalHeightMm
+      : positiveNumber(
+          marker?.heightMm ?? (marker as { markerHeightMm?: number } | null | undefined)?.markerHeightMm,
+          fallback.heightMm
+        ),
+    screen,
     coordinateSystem: {
       origin: marker?.coordinateSystem?.origin || fallback.coordinateSystem.origin,
-      xAxis: marker?.coordinateSystem?.xAxis || fallback.coordinateSystem.xAxis,
-      yAxis: marker?.coordinateSystem?.yAxis || fallback.coordinateSystem.yAxis,
-      zAxis: marker?.coordinateSystem?.zAxis || fallback.coordinateSystem.zAxis,
+      xAxis: "left/right on marker",
+      yAxis: "forward/back on marker",
+      zAxis: "vertical height above marker",
       units: "meters" as const
     }
   } satisfies MarkerSettings;
+}
+
+export function screenPhysicalSizeFromPixels(
+  widthPx: number,
+  heightPx: number,
+  physicalWidthMm = DEFAULT_SCREEN_PHYSICAL_WIDTH_MM
+) {
+  const width = positiveNumber(widthPx, 1920);
+  const height = positiveNumber(heightPx, 1080);
+  const physicalWidth = positiveNumber(physicalWidthMm, DEFAULT_SCREEN_PHYSICAL_WIDTH_MM);
+
+  return {
+    widthMm: Math.round(physicalWidth),
+    heightMm: Math.round(physicalWidth * (height / width))
+  };
 }
 
 export function markerImageUrlForStyle(styleId: string) {
@@ -171,6 +218,23 @@ function positiveNumber(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
     : fallback;
+}
+
+function normalizeScreenSettings(screen: Partial<NonNullable<MarkerSettings["screen"]>> | null | undefined) {
+  const widthPx = positiveNumber(screen?.widthPx, 1920);
+  const heightPx = positiveNumber(screen?.heightPx, 1080);
+  const physical = screenPhysicalSizeFromPixels(
+    widthPx,
+    heightPx,
+    positiveNumber(screen?.physicalWidthMm, DEFAULT_SCREEN_PHYSICAL_WIDTH_MM)
+  );
+
+  return {
+    widthPx,
+    heightPx,
+    physicalWidthMm: positiveNumber(screen?.physicalWidthMm, physical.widthMm),
+    physicalHeightMm: positiveNumber(screen?.physicalHeightMm, physical.heightMm)
+  };
 }
 
 function svgDataUrl(svg: string) {

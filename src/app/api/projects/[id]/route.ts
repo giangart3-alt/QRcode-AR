@@ -118,7 +118,7 @@ export async function PATCH(
     const placement = normalizePlacement(
       body.placement as Parameters<typeof normalizePlacement>[0],
       activeScene.normalizedScale,
-      activeScene.placement.position.y
+      activeScene.placement.position.z
     );
     const updatedScenes = project.scenes.map((scene) =>
       scene.id === activeScene.id

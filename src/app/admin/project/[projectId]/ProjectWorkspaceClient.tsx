@@ -6,11 +6,14 @@ import QRCode from "qrcode";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
 import { SceneThreeViewport, type TransformMode } from "@/components/SceneThreeViewport";
+import { APP_AXIS_COLORS, type AppAxis } from "@/lib/coordinates";
 import {
   MARKER_STYLES,
   createDefaultPlacement,
   createMarkerSettings,
+  screenPhysicalSizeFromPixels,
   type MarkerSettings,
+  type MarkerOutputMode,
   type MarkerStyleId
 } from "@/lib/placement";
 import { fitModelToMarker, roundForStorage, type SceneScaleMetrics } from "@/lib/scene-transform";
@@ -23,6 +26,8 @@ type UploadProgress = {
 };
 
 type UploadStage = "idle" | "uploading" | "saving";
+type SaveState = "saved" | "dirty" | "saving" | "error";
+type MarkerOrientation = "landscape" | "portrait";
 
 type UploadRouteResponse = {
   error?: string;
@@ -32,17 +37,17 @@ const MAX_GLB_SIZE_BYTES = 500 * 1024 * 1024;
 const MULTIPART_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const SCALE_PRESETS = [50, 100, 200, 500, 1000];
 const PRINT_PRESETS = [
-  { label: "A4", widthMm: 297, heightMm: 210 },
-  { label: "A3", widthMm: 420, heightMm: 297 },
-  { label: "A2", widthMm: 594, heightMm: 420 },
-  { label: "A1", widthMm: 841, heightMm: 594 },
-  { label: "A0", widthMm: 1189, heightMm: 841 },
-  { label: "2A0", widthMm: 1682, heightMm: 1189 },
-  { label: "4A0", widthMm: 2378, heightMm: 1682 }
+  { label: "A4", widthMm: 210, heightMm: 297 },
+  { label: "A3", widthMm: 297, heightMm: 420 },
+  { label: "A2", widthMm: 420, heightMm: 594 },
+  { label: "A1", widthMm: 594, heightMm: 841 },
+  { label: "A0", widthMm: 841, heightMm: 1189 },
+  { label: "2A0", widthMm: 1189, heightMm: 1682 },
+  { label: "4A0", widthMm: 1682, heightMm: 2378 }
 ];
 const SCREEN_PRESETS = [
-  { label: "16:9", widthPx: 1600, heightPx: 900 },
-  { label: "16:10", widthPx: 1600, heightPx: 1000 },
+  { label: "16:9", widthPx: 1920, heightPx: 1080 },
+  { label: "16:10", widthPx: 1920, heightPx: 1200 },
   { label: "Full HD", widthPx: 1920, heightPx: 1080 },
   { label: "4K", widthPx: 3840, heightPx: 2160 },
   { label: "8K", widthPx: 7680, heightPx: 4320 }
@@ -63,11 +68,14 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [markerOpen, setMarkerOpen] = useState(false);
   const [markerMode, setMarkerMode] = useState<"print" | "screen">("print");
+  const [markerOrientation, setMarkerOrientation] = useState<MarkerOrientation>("landscape");
   const [customMarkerMm, setCustomMarkerMm] = useState({ widthMm: 1000, heightMm: 700 });
   const [customScreenPx, setCustomScreenPx] = useState({ widthPx: 1920, heightPx: 1080 });
+  const [screenPhysicalMm, setScreenPhysicalMm] = useState({ widthMm: 600, heightMm: 338 });
   const [scenesOpen, setScenesOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [status, setStatus] = useState("Loading project...");
+  const [saveState, setSaveState] = useState<SaveState>("saved");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [uploadStage, setUploadStage] = useState<UploadStage>("idle");
@@ -104,6 +112,20 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
         setError("");
         setProject(result.project);
         setSelectedSceneId(result.project.activeSceneId || result.project.scenes[0]?.id || "");
+        setMarkerMode(result.project.marker.outputMode || "print");
+        setCustomMarkerMm({
+          widthMm: result.project.marker.widthMm,
+          heightMm: result.project.marker.heightMm
+        });
+        setCustomScreenPx({
+          widthPx: result.project.marker.screen?.widthPx || 1920,
+          heightPx: result.project.marker.screen?.heightPx || 1080
+        });
+        setScreenPhysicalMm({
+          widthMm: result.project.marker.screen?.physicalWidthMm || result.project.marker.widthMm,
+          heightMm: result.project.marker.screen?.physicalHeightMm || result.project.marker.heightMm
+        });
+        setSaveState("saved");
         setStatus("Project loaded.");
       } catch (caught) {
         if (cancelled) return;
@@ -119,6 +141,11 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
+  function markDirty(nextStatus = "Unsaved changes.") {
+    setSaveState("dirty");
+    setStatus(nextStatus);
+  }
+
   const handleViewportStatus = useCallback((nextStatus: string) => {
     setStatus(nextStatus);
   }, []);
@@ -128,7 +155,11 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
   }, []);
 
   const handleSceneTransformChange = useCallback((nextScene: SceneMetadata) => {
-    updateScene(nextScene.id, () => nextScene);
+    setProject((current) =>
+      current ? updateSceneInProject(current, nextScene.id, () => nextScene) : current
+    );
+    setSaveState("dirty");
+    setStatus("Scene has unsaved changes.");
   }, []);
 
   async function saveProject(nextProject = project, nextStatus = "Project saved.") {
@@ -136,6 +167,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
     setBusy(true);
     setError("");
+    setSaveState("saving");
     setStatus("Saving project...");
 
     try {
@@ -162,10 +194,12 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
       window.sessionStorage.setItem("adminPassword", password);
       setProject(result.project);
       setSelectedSceneId((current) => current || result.project?.activeSceneId || "");
+      setSaveState("saved");
       setStatus(nextStatus);
       return result.project;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to save project.");
+      setSaveState("error");
       setStatus("Save failed.");
       return null;
     } finally {
@@ -221,6 +255,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
       setNewSceneName("");
       setNewSceneFile(null);
       setUploadProgress(100);
+      setSaveState("saved");
       setStatus("Scene added.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to add scene.");
@@ -294,6 +329,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
       window.sessionStorage.setItem("adminPassword", password);
       setProject(result.project);
       setSelectedSceneId(sceneId);
+      setSaveState("saved");
       setStatus("Active scene updated.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to set active scene.");
@@ -368,6 +404,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
       setProject(result.project);
       setSelectedSceneId(result.project.activeSceneId || result.project.scenes[0]?.id || "");
       setInspectorOpen(false);
+      setSaveState("saved");
       setStatus(`Scene deleted. Removed ${result.deletedAssets?.length || 0} unreferenced asset(s).`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to delete scene.");
@@ -377,36 +414,129 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     }
   }
 
-  async function updateMarker(marker: MarkerSettings, nextStatus = "Marker updated.") {
+  function updateMarkerDraft(marker: MarkerSettings, nextStatus = "Marker settings changed.") {
     if (!project) return;
     const updatedProject = { ...project, marker };
     setProject(updatedProject);
-    await saveProject(updatedProject, nextStatus);
+    markDirty(`${nextStatus} Save marker settings to persist.`);
   }
 
-  async function setMarkerStyle(styleId: MarkerStyleId) {
+  function setMarkerStyle(styleId: MarkerStyleId) {
     if (!project) return;
-    await updateMarker(createMarkerSettings({ ...project.marker, styleId }), "Marker style saved.");
+    updateMarkerDraft(createMarkerSettings({ ...project.marker, styleId }), "Marker style updated.");
   }
 
-  async function setMarkerSize(widthMm: number, heightMm: number, label: string) {
+  function setPrintMarkerSize(widthMm: number, heightMm: number, label: string) {
     if (!project) return;
-    await updateMarker(
+    setMarkerMode("print");
+    setCustomMarkerMm({ widthMm, heightMm });
+    updateMarkerDraft(
       createMarkerSettings({
         ...project.marker,
+        outputMode: "print",
+        presetLabel: label,
         widthMm,
         heightMm
       }),
-      `${label} marker size saved.`
+      `${label} marker size updated.`
     );
+  }
+
+  function setScreenMarkerSize(widthPx: number, heightPx: number, label: string) {
+    if (!project) return;
+    const physical = screenPhysicalSizeFromPixels(widthPx, heightPx, screenPhysicalMm.widthMm);
+
+    setMarkerMode("screen");
+    setCustomScreenPx({ widthPx, heightPx });
+    setScreenPhysicalMm(physical);
+    updateMarkerDraft(
+      createMarkerSettings({
+        ...project.marker,
+        outputMode: "screen",
+        presetLabel: label,
+        screen: {
+          widthPx,
+          heightPx,
+          physicalWidthMm: physical.widthMm,
+          physicalHeightMm: physical.heightMm
+        }
+      }),
+      `${label} screen marker updated.`
+    );
+  }
+
+  function setScreenPhysicalSize(widthMm: number, heightMm: number) {
+    if (!project) return;
+    const widthPx = project.marker.screen?.widthPx || customScreenPx.widthPx;
+    const heightPx = project.marker.screen?.heightPx || customScreenPx.heightPx;
+
+    setMarkerMode("screen");
+    setScreenPhysicalMm({ widthMm, heightMm });
+    updateMarkerDraft(
+      createMarkerSettings({
+        ...project.marker,
+        outputMode: "screen",
+        presetLabel: project.marker.presetLabel || "Custom px",
+        screen: {
+          widthPx,
+          heightPx,
+          physicalWidthMm: widthMm,
+          physicalHeightMm: heightMm
+        }
+      }),
+      "Screen physical size updated."
+    );
+  }
+
+  function setMarkerOutputMode(outputMode: MarkerOutputMode) {
+    if (!project) return;
+    setMarkerMode(outputMode);
+
+    if (outputMode === "print") {
+      updateMarkerDraft(
+        createMarkerSettings({
+          ...project.marker,
+          outputMode: "print",
+          presetLabel: project.marker.presetLabel || "Custom mm",
+          widthMm: customMarkerMm.widthMm,
+          heightMm: customMarkerMm.heightMm
+        }),
+        "Print marker mode selected."
+      );
+      return;
+    }
+
+    updateMarkerDraft(
+      createMarkerSettings({
+        ...project.marker,
+        outputMode: "screen",
+        presetLabel: project.marker.presetLabel || "Full HD",
+        screen: {
+          widthPx: customScreenPx.widthPx,
+          heightPx: customScreenPx.heightPx,
+          physicalWidthMm: screenPhysicalMm.widthMm,
+          physicalHeightMm: screenPhysicalMm.heightMm
+        }
+      }),
+      "Screen marker mode selected."
+    );
+  }
+
+  async function saveMarkerSettings(closeAfterSave = false) {
+    const saved = await saveProject(project, "Marker settings saved.");
+    if (saved && closeAfterSave) {
+      setMarkerOpen(false);
+    }
   }
 
   function updateProjectName(name: string) {
     setProject((current) => (current ? { ...current, name } : current));
+    markDirty("Project name changed.");
   }
 
   function updateScene(sceneId: string, updater: (scene: SceneMetadata) => SceneMetadata) {
     setProject((current) => (current ? updateSceneInProject(current, sceneId, updater) : current));
+    markDirty("Scene has unsaved changes.");
   }
 
   function updateSceneNumber(
@@ -443,7 +573,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
       ...scene,
       placement: {
         ...scene.placement,
-        position: { ...scene.placement.position, x: 0, z: 0 }
+        position: { ...scene.placement.position, x: 0, y: 0 }
       }
     }));
   }
@@ -478,18 +608,27 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     }));
   }
 
+  const saveStateLabel = {
+    saved: "Saved",
+    dirty: "Unsaved changes",
+    saving: "Saving...",
+    error: "Save error"
+  }[saveState];
+
   return (
     <main className="h-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
-      <header className="flex min-h-16 items-center justify-between gap-3 border-b border-[var(--line)] bg-white px-3 py-2 md:px-4">
+      <header className="flex min-h-14 items-center justify-between gap-3 border-b border-[var(--line)] bg-white px-3 py-2 md:px-4">
         <div className="flex min-w-0 items-center gap-3">
           <Link className="button-compact shrink-0" href="/admin/dashboard">
             Back
           </Link>
           <div className="min-w-0">
-            <h1 className="truncate text-lg font-black text-[var(--ink)]">
+            <h1 className="truncate text-base font-semibold text-[var(--ink)]">
               {project?.name || projectId}
             </h1>
-            <p className="truncate text-xs font-semibold text-[var(--muted)]">{status}</p>
+            <p className="truncate text-xs text-[var(--muted)]">
+              {saveStateLabel} · {status}
+            </p>
           </div>
         </div>
 
@@ -505,6 +644,14 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
               onClick={() => setInspectorOpen(true)}
             >
               Inspector
+            </button>
+            <button
+              type="button"
+              className="button-compact-primary"
+              disabled={working || saveState === "saving"}
+              onClick={() => saveProject(project, "Project saved.")}
+            >
+              Save project
             </button>
             <button type="button" className="button-compact" onClick={openMarkerModal}>
               Marker
@@ -538,7 +685,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
         ) : null}
       </header>
 
-      <div className={selectedScene ? "relative h-[calc(100vh-4rem)] lg:grid lg:grid-cols-[300px_minmax(0,1fr)_360px]" : "relative h-[calc(100vh-4rem)] lg:grid lg:grid-cols-[300px_minmax(0,1fr)]"}>
+      <div className={selectedScene ? "relative h-[calc(100vh-3.5rem)] lg:grid lg:grid-cols-[280px_minmax(0,1fr)_340px]" : "relative h-[calc(100vh-3.5rem)] lg:grid lg:grid-cols-[280px_minmax(0,1fr)]"}>
         {scenesOpen ? (
           <button
             type="button"
@@ -649,19 +796,11 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
             </button>
           </form>
 
-          <button
-            type="button"
-            disabled={working || !project}
-            className="focus-ring mt-4 w-full rounded-lg bg-[var(--ink)] px-4 py-3 text-sm font-semibold text-white hover:bg-black disabled:opacity-60"
-            onClick={() => saveProject(project, "Project saved.")}
-          >
-            Save project
-          </button>
         </aside>
 
         <section className="relative flex h-full min-w-0 flex-col">
-          <div className="pointer-events-none absolute left-4 top-4 z-20 flex max-w-[calc(100%-8rem)] flex-wrap items-center gap-2">
-            <div className="pointer-events-auto flex rounded-lg border border-[var(--line)] bg-white/90 p-1 shadow-sm backdrop-blur">
+          <div className={`pointer-events-none absolute left-3 z-20 flex max-w-[calc(100%-7rem)] flex-wrap items-center gap-2 ${error && !selectedScene ? "top-14" : "top-3"}`}>
+            <div className="pointer-events-auto flex rounded-md border border-[var(--line)] bg-white/90 p-1 shadow-sm backdrop-blur">
               {(["translate", "rotate", "scale"] as TransformMode[]).map((mode) => (
                 <button
                   key={mode}
@@ -669,17 +808,17 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
                   title={`Transform mode: ${mode}`}
                   className={
                     transformMode === mode
-                      ? "rounded-md bg-[var(--ink)] px-3 py-2 text-xs font-black text-white"
-                      : "rounded-md px-3 py-2 text-xs font-black text-[var(--muted)] hover:bg-[var(--soft)]"
+                      ? "rounded bg-[var(--ink)] px-3 py-1.5 text-xs font-semibold text-white"
+                      : "rounded px-3 py-1.5 text-xs font-semibold text-[var(--muted)] hover:bg-[var(--soft)]"
                   }
                   onClick={() => setTransformMode(mode)}
                 >
-                  {mode}
+                  {mode === "translate" ? "Move" : mode === "rotate" ? "Rotate" : "Scale"}
                 </button>
               ))}
             </div>
             {metrics ? (
-              <p className="pointer-events-auto rounded-lg border border-[var(--line)] bg-white/90 px-3 py-2 text-xs font-bold text-[var(--muted)] shadow-sm backdrop-blur">
+              <p className="pointer-events-auto rounded-md border border-[var(--line)] bg-white/90 px-3 py-1.5 text-xs font-semibold text-[var(--muted)] shadow-sm backdrop-blur">
                 Model {formatNumber(metrics.modelWidthM)}m x {formatNumber(metrics.modelDepthM)}m - scale {formatNumber(metrics.displayedScale)}
               </p>
             ) : null}
@@ -756,15 +895,22 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
           project={project}
           qrDataUrl={qrDataUrl}
           mode={markerMode}
+          orientation={markerOrientation}
           customMm={customMarkerMm}
           customPx={customScreenPx}
+          screenPhysicalMm={screenPhysicalMm}
+          saveState={saveState}
           busy={working}
-          onClose={() => setMarkerOpen(false)}
-          onModeChange={setMarkerMode}
+          onApply={() => saveMarkerSettings(true)}
+          onSave={() => saveMarkerSettings(false)}
+          onModeChange={setMarkerOutputMode}
+          onOrientationChange={setMarkerOrientation}
           onCustomMmChange={setCustomMarkerMm}
           onCustomPxChange={setCustomScreenPx}
+          onScreenPhysicalMmChange={setScreenPhysicalSize}
           onStyleChange={setMarkerStyle}
-          onSetSize={setMarkerSize}
+          onSetPrintSize={setPrintMarkerSize}
+          onSetScreenSize={setScreenMarkerSize}
         />
       ) : null}
     </main>
@@ -775,30 +921,50 @@ function MarkerModal({
   project,
   qrDataUrl,
   mode,
+  orientation,
   customMm,
   customPx,
+  screenPhysicalMm,
+  saveState,
   busy,
-  onClose,
+  onApply,
+  onSave,
   onModeChange,
+  onOrientationChange,
   onCustomMmChange,
   onCustomPxChange,
+  onScreenPhysicalMmChange,
   onStyleChange,
-  onSetSize
+  onSetPrintSize,
+  onSetScreenSize
 }: {
   project: ProjectMetadata;
   qrDataUrl: string;
   mode: "print" | "screen";
+  orientation: MarkerOrientation;
   customMm: { widthMm: number; heightMm: number };
   customPx: { widthPx: number; heightPx: number };
+  screenPhysicalMm: { widthMm: number; heightMm: number };
+  saveState: SaveState;
   busy: boolean;
-  onClose: () => void;
-  onModeChange: (mode: "print" | "screen") => void;
+  onApply: () => void;
+  onSave: () => void;
+  onModeChange: (mode: MarkerOutputMode) => void;
+  onOrientationChange: (orientation: MarkerOrientation) => void;
   onCustomMmChange: (value: { widthMm: number; heightMm: number }) => void;
   onCustomPxChange: (value: { widthPx: number; heightPx: number }) => void;
+  onScreenPhysicalMmChange: (widthMm: number, heightMm: number) => void;
   onStyleChange: (styleId: MarkerStyleId) => void;
-  onSetSize: (widthMm: number, heightMm: number, label: string) => void;
+  onSetPrintSize: (widthMm: number, heightMm: number, label: string) => void;
+  onSetScreenSize: (widthPx: number, heightPx: number, label: string) => void;
 }) {
   const marker = project.marker;
+  const markerSaveLabel = {
+    saved: "Saved",
+    dirty: "Unsaved",
+    saving: "Saving...",
+    error: "Save error"
+  }[saveState];
   const svgHref = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
     buildMarkerSvg(project.name, marker, project.arUrl, qrDataUrl)
   )}`;
@@ -836,20 +1002,20 @@ function MarkerModal({
 
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-black/45 p-3">
-      <section className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl border border-[var(--line)] bg-white p-4 shadow-2xl md:p-5">
+      <section className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-xl border border-[var(--line)] bg-white p-4 shadow-2xl md:p-5">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] pb-4">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Marker export</p>
-            <h2 className="text-2xl font-black text-[var(--ink)]">{project.name}</h2>
+            <h2 className="text-lg font-semibold text-[var(--ink)]">Marker settings</h2>
+            <p className="mt-1 text-xs text-[var(--muted)]">{markerSaveLabel} · {project.name}</p>
           </div>
-          <button type="button" className="button-compact" onClick={onClose}>
-            Close
+          <button type="button" className="button-compact-primary" disabled={busy} onClick={onApply}>
+            Apply changes
           </button>
         </div>
 
         <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="rounded-xl border border-[var(--line)] bg-[var(--soft)] p-3">
-            <div className="grid gap-3 rounded-lg bg-white p-3 md:grid-cols-[minmax(0,1fr)_180px]">
+          <div className="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
+            <div className="grid gap-3 rounded-md bg-white p-3 md:grid-cols-[minmax(0,1fr)_180px]">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={marker.imageUrl} alt={`${project.name} marker`} className="w-full rounded-md border border-[var(--line)]" />
               <div className="grid content-start gap-3">
@@ -862,15 +1028,20 @@ function MarkerModal({
                   </div>
                 )}
                 <p className="break-all text-xs font-semibold text-[var(--muted)]">{project.arUrl}</p>
-                <p className="text-xs font-black text-[var(--ink)]">
+                <p className="text-xs font-semibold text-[var(--ink)]">
                   {marker.widthMm} x {marker.heightMm} mm
                 </p>
+                {marker.outputMode === "screen" && marker.screen ? (
+                  <p className="text-xs text-[var(--muted)]">
+                    {marker.screen.widthPx} x {marker.screen.heightPx} px
+                  </p>
+                ) : null}
               </div>
             </div>
           </div>
 
           <aside className="space-y-4">
-            <label className="block text-sm font-semibold text-[var(--ink)]">
+            <label className="block text-xs font-semibold text-[var(--ink)]">
               Marker style
               <select
                 value={marker.styleId}
@@ -901,13 +1072,28 @@ function MarkerModal({
 
               {mode === "print" ? (
                 <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="col-span-2 grid grid-cols-2 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-1">
+                    {(["landscape", "portrait"] as MarkerOrientation[]).map((item) => (
+                      <button
+                        key={item}
+                        type="button"
+                        className={orientation === item ? "rounded-md bg-[var(--ink)] px-3 py-2 text-xs font-semibold text-white" : "rounded-md px-3 py-2 text-xs font-semibold text-[var(--muted)]"}
+                        onClick={() => onOrientationChange(item)}
+                      >
+                        {item === "landscape" ? "Landscape" : "Portrait"}
+                      </button>
+                    ))}
+                  </div>
                   {PRINT_PRESETS.map((preset) => (
                     <button
                       key={preset.label}
                       type="button"
                       disabled={busy}
                       className="button-compact"
-                      onClick={() => onSetSize(preset.widthMm, preset.heightMm, preset.label)}
+                      onClick={() => {
+                        const next = dimensionsForOrientation(preset.widthMm, preset.heightMm, orientation);
+                        onSetPrintSize(next.widthMm, next.heightMm, preset.label);
+                      }}
                     >
                       {preset.label}
                     </button>
@@ -917,7 +1103,7 @@ function MarkerModal({
                     width={customMm.widthMm}
                     height={customMm.heightMm}
                     onChange={(width, height) => onCustomMmChange({ widthMm: width, heightMm: height })}
-                    onApply={() => onSetSize(customMm.widthMm, customMm.heightMm, "Custom mm")}
+                    onApply={() => onSetPrintSize(customMm.widthMm, customMm.heightMm, "Custom mm")}
                   />
                 </div>
               ) : (
@@ -928,7 +1114,7 @@ function MarkerModal({
                       type="button"
                       disabled={busy}
                       className="button-compact"
-                      onClick={() => onSetSize(preset.widthPx, preset.heightPx, preset.label)}
+                      onClick={() => onSetScreenSize(preset.widthPx, preset.heightPx, preset.label)}
                     >
                       {preset.label}
                     </button>
@@ -938,7 +1124,14 @@ function MarkerModal({
                     width={customPx.widthPx}
                     height={customPx.heightPx}
                     onChange={(width, height) => onCustomPxChange({ widthPx: width, heightPx: height })}
-                    onApply={() => onSetSize(customPx.widthPx, customPx.heightPx, "Custom px")}
+                    onApply={() => onSetScreenSize(customPx.widthPx, customPx.heightPx, "Custom px")}
+                  />
+                  <CustomSizeFields
+                    unit="mm"
+                    width={screenPhysicalMm.widthMm}
+                    height={screenPhysicalMm.heightMm}
+                    onChange={(width, height) => onScreenPhysicalMmChange(width, height)}
+                    onApply={() => onScreenPhysicalMmChange(screenPhysicalMm.widthMm, screenPhysicalMm.heightMm)}
                   />
                 </div>
               )}
@@ -946,6 +1139,9 @@ function MarkerModal({
 
             <div className="grid grid-cols-2 gap-2">
               <CopyButton value={project.arUrl} label="Copy AR link" compact />
+              <button type="button" className="button-compact-primary" disabled={busy} onClick={onSave}>
+                Save marker settings
+              </button>
               <a className="button-compact" href={svgHref} download={`${safeFileName(project.name)}-marker.svg`}>
                 Download SVG
               </a>
@@ -1049,47 +1245,47 @@ function SceneInspector({
   onRotate: (axis: "x" | "y" | "z") => void;
 }) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <section>
-        <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Scene inspector</p>
-        <h2 className="mt-1 truncate text-xl font-black text-[var(--ink)]">{scene.name}</h2>
+        <p className="text-xs font-semibold uppercase text-[var(--muted)]">Scene inspector</p>
+        <h2 className="mt-1 truncate text-base font-semibold text-[var(--ink)]">{scene.name}</h2>
       </section>
 
-      <details className="rounded-xl border border-[var(--line)] bg-white p-3">
-        <summary className="cursor-pointer text-sm font-black text-[var(--ink)]">
+      <details className="rounded-lg border border-[var(--line)] bg-white p-3">
+        <summary className="cursor-pointer text-sm font-semibold text-[var(--ink)]">
           Scene settings
         </summary>
-        <div className="mt-4 space-y-4">
-          <label className="block text-sm font-semibold text-[var(--ink)]">
+        <div className="mt-3 space-y-3">
+          <label className="block text-xs font-semibold text-[var(--ink)]">
             Scene name
             <input
               value={scene.name}
               onChange={(event) => onSceneNameChange(event.target.value)}
-              className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)] shadow-inner"
+              className="focus-ring mt-1.5 h-9 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm text-[var(--ink)] shadow-inner"
             />
           </label>
 
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">Model path</p>
-            <p className="mt-2 break-all rounded-lg border border-[var(--line)] bg-[var(--soft)] p-2 text-xs leading-5 text-[var(--muted)]">
+            <p className="text-xs font-semibold uppercase text-[var(--muted)]">Model path</p>
+            <p className="mt-1.5 break-all rounded-md border border-[var(--line)] bg-[var(--soft)] p-2 text-xs leading-5 text-[var(--muted)]">
               {scene.modelPathname || "No model uploaded for this scene."}
             </p>
           </div>
 
           <form onSubmit={onReplaceModel}>
-            <h3 className="text-sm font-black text-[var(--ink)]">
+            <h3 className="text-sm font-semibold text-[var(--ink)]">
               {scene.modelUrl ? "Replace GLB" : "Upload GLB"}
             </h3>
             <input
               type="file"
               accept=".glb,model/gltf-binary,application/octet-stream"
               onChange={(event) => onReplaceFile(event.target.files?.[0] || null)}
-              className="focus-ring mt-3 w-full rounded-lg border border-dashed border-[var(--line)] bg-white px-3 py-3 text-xs text-[var(--ink)] file:mr-3 file:rounded-md file:border-0 file:bg-[var(--ink)] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-white"
+              className="focus-ring mt-2 w-full rounded-md border border-dashed border-[var(--line)] bg-white px-2.5 py-2 text-xs text-[var(--ink)] file:mr-2 file:rounded file:border-0 file:bg-[var(--ink)] file:px-2.5 file:py-1.5 file:text-xs file:font-semibold file:text-white"
             />
             <button
               type="submit"
               disabled={busy || !replaceFile}
-              className="button-compact-primary mt-3 w-full"
+              className="button-compact-primary mt-2 w-full"
             >
               {uploadStage === "uploading" ? `Uploading ${uploadProgress}%` : "Upload GLB"}
             </button>
@@ -1111,13 +1307,14 @@ function SceneInspector({
         </div>
       </details>
 
-      <section className="rounded-xl border border-[var(--line)] p-3">
-        <h3 className="text-sm font-black text-[var(--ink)]">Position (mm)</h3>
-        <div className="mt-3 grid grid-cols-3 gap-2">
+      <section className="rounded-lg border border-[var(--line)] bg-white p-3">
+        <h3 className="text-sm font-semibold text-[var(--ink)]">Position (mm)</h3>
+        <div className="grid grid-cols-3 gap-2">
           {(["x", "y", "z"] as const).map((axis) => (
             <NumberField
               key={axis}
               label={axis.toUpperCase()}
+              axis={axis}
               value={scene.placement.position[axis]}
               onChange={(value) => onPositionChange(axis, value)}
             />
@@ -1125,13 +1322,14 @@ function SceneInspector({
         </div>
       </section>
 
-      <section className="rounded-xl border border-[var(--line)] p-3">
-        <h3 className="text-sm font-black text-[var(--ink)]">Rotation (degrees)</h3>
-        <div className="mt-3 grid grid-cols-3 gap-2">
+      <section className="rounded-lg border border-[var(--line)] bg-white p-3">
+        <h3 className="text-sm font-semibold text-[var(--ink)]">Rotation (degrees)</h3>
+        <div className="grid grid-cols-3 gap-2">
           {(["x", "y", "z"] as const).map((axis) => (
             <NumberField
               key={axis}
               label={axis.toUpperCase()}
+              axis={axis}
               value={scene.placement.rotation[axis]}
               onChange={(value) => onRotationChange(axis, value)}
             />
@@ -1146,9 +1344,9 @@ function SceneInspector({
         </div>
       </section>
 
-      <section className="rounded-xl border border-[var(--line)] p-3">
-        <h3 className="text-sm font-black text-[var(--ink)]">Scale</h3>
-        <div className="mt-3 grid grid-cols-2 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-1">
+      <section className="rounded-lg border border-[var(--line)] bg-white p-3">
+        <h3 className="text-sm font-semibold text-[var(--ink)]">Scale</h3>
+        <div className="mt-2 grid grid-cols-2 rounded-md border border-[var(--line)] bg-[var(--soft)] p-1">
           {(["fit", "architectural"] as ScaleMode[]).map((mode) => (
             <button
               key={mode}
@@ -1337,22 +1535,24 @@ async function readJson<T>(response: Response) {
 
 function NumberField({
   label,
+  axis,
   value,
   onChange
 }: {
   label: string;
+  axis?: AppAxis;
   value: number;
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="mt-3 block text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">
-      {label}
+    <label className="mt-2 block text-xs font-semibold uppercase text-[var(--muted)]">
+      <span style={axis ? { color: APP_AXIS_COLORS[axis] } : undefined}>{label}</span>
       <input
         type="text"
         inputMode="decimal"
         value={formatNumber(value)}
         onChange={(event) => onChange(event.target.value)}
-        className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-semibold text-[var(--ink)] shadow-inner"
+        className="focus-ring mt-1.5 h-9 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm font-medium text-[var(--ink)] shadow-inner"
       />
     </label>
   );
@@ -1397,6 +1597,19 @@ function triggerDownload(href: string, fileName: string) {
 
 function safeFileName(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "marker";
+}
+
+function dimensionsForOrientation(
+  widthMm: number,
+  heightMm: number,
+  orientation: MarkerOrientation
+) {
+  const shortSide = Math.min(widthMm, heightMm);
+  const longSide = Math.max(widthMm, heightMm);
+
+  return orientation === "landscape"
+    ? { widthMm: longSide, heightMm: shortSide }
+    : { widthMm: shortSide, heightMm: longSide };
 }
 
 function escapeXml(value: string) {

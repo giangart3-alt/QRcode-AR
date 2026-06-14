@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
+import { APP_AXIS_COLORS } from "@/lib/coordinates";
 import type { MarkerSettings } from "@/lib/placement";
 import { mmToMeters } from "@/lib/placement";
 import {
@@ -91,7 +92,7 @@ export function SceneThreeViewport({
     host.appendChild(renderer.domElement);
 
     const threeScene = new THREE.Scene();
-    threeScene.background = new THREE.Color(0xfff7ed);
+    threeScene.background = new THREE.Color(0xf6f7f9);
 
     const camera = new THREE.PerspectiveCamera(48, 1, 0.01, 1000);
     camera.position.set(0.35, Math.max(maxMarkerMeters * 0.75, 0.75), Math.max(maxMarkerMeters * 0.95, 0.95));
@@ -101,8 +102,8 @@ export function SceneThreeViewport({
     orbit.enableDamping = true;
     orbit.target.set(0, 0, 0);
 
-    threeScene.add(new THREE.AmbientLight(0xffffff, 1.5));
-    threeScene.add(new THREE.HemisphereLight(0xffffff, 0xf97316, 2.2));
+    threeScene.add(new THREE.AmbientLight(0xffffff, 1.45));
+    threeScene.add(new THREE.HemisphereLight(0xffffff, 0xd7dee8, 2.1));
     const directional = new THREE.DirectionalLight(0xffffff, 2.4);
     directional.position.set(2, 4, 3);
     threeScene.add(directional);
@@ -130,11 +131,11 @@ export function SceneThreeViewport({
     border.rotation.x = -Math.PI / 2;
     threeScene.add(border);
 
-    const grid = new THREE.GridHelper(maxMarkerMeters, 10, 0xf97316, 0xfed7aa);
+    const grid = new THREE.GridHelper(maxMarkerMeters, 10, 0x8b98aa, 0xd5dbe5);
     grid.position.y = 0.002;
     threeScene.add(grid);
 
-    const axes = new THREE.AxesHelper(Math.min(maxMarkerMeters * 0.28, 0.3));
+    const axes = createAppAxesHelper(Math.min(maxMarkerMeters * 0.28, 0.3));
     axes.position.set(0, 0.01, 0);
     threeScene.add(axes);
 
@@ -258,6 +259,7 @@ export function SceneThreeViewport({
       disposeMaterial(markerPlane.material);
       border.geometry.dispose();
       disposeMaterial(border.material);
+      disposeObject(axes);
       renderer.dispose();
       renderer.domElement.remove();
       modelRef.current = null;
@@ -279,14 +281,14 @@ export function SceneThreeViewport({
   return (
     <div className={`relative min-h-[420px] overflow-hidden bg-[var(--soft)] ${className}`}>
       <div ref={hostRef} className="absolute inset-0" />
-      <div className="pointer-events-none absolute right-4 top-4 z-10 rounded-lg border border-[var(--line)] bg-white/90 p-3 shadow-sm backdrop-blur">
-        <div className="relative h-16 w-16">
-          <span className="absolute left-8 top-8 h-0.5 w-7 origin-left -rotate-[18deg] bg-[#ef4444]" />
-          <span className="absolute left-[3.35rem] top-[1.72rem] text-[10px] font-black text-[#ef4444]">X</span>
-          <span className="absolute left-8 top-8 h-8 w-0.5 origin-bottom bg-[#22c55e]" />
-          <span className="absolute left-[1.7rem] top-0 text-[10px] font-black text-[#22c55e]">Y</span>
-          <span className="absolute left-8 top-8 h-0.5 w-7 origin-left rotate-[45deg] bg-[#3b82f6]" />
-          <span className="absolute left-[3.05rem] top-[3.1rem] text-[10px] font-black text-[#3b82f6]">Z</span>
+      <div className="pointer-events-none absolute right-3 top-3 z-10 rounded-md border border-[var(--line)] bg-white/88 p-2 shadow-sm backdrop-blur">
+        <div className="relative h-14 w-14">
+          <span className="absolute left-7 top-7 h-0.5 w-7 origin-left -rotate-[14deg] bg-[#ef4444]" />
+          <span className="absolute left-[3.15rem] top-[1.45rem] text-[10px] font-black text-[#ef4444]">X</span>
+          <span className="absolute left-7 top-7 h-0.5 w-7 origin-left rotate-[35deg] bg-[#22c55e]" />
+          <span className="absolute left-[2.9rem] top-[2.85rem] text-[10px] font-black text-[#22c55e]">Y</span>
+          <span className="absolute left-7 top-7 h-7 w-0.5 origin-bottom bg-[#3b82f6]" />
+          <span className="absolute left-[1.45rem] top-0 text-[10px] font-black text-[#3b82f6]">Z</span>
           <span className="absolute left-[1.85rem] top-[1.85rem] h-2 w-2 rounded-full bg-[var(--ink)]" />
         </div>
       </div>
@@ -307,12 +309,29 @@ export function SceneThreeViewport({
 function ViewportMessage({ title, body }: { title: string; body: string }) {
   return (
     <div className="pointer-events-none absolute inset-0 grid place-items-center p-6">
-      <div className="max-w-sm rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 text-center shadow-sm backdrop-blur">
-        <h2 className="text-xl font-black text-[var(--ink)]">{title}</h2>
-        <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{body}</p>
+      <div className="max-w-sm rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4 text-center shadow-sm backdrop-blur">
+        <h2 className="text-base font-semibold text-[var(--ink)]">{title}</h2>
+        <p className="mt-2 text-sm leading-5 text-[var(--muted)]">{body}</p>
       </div>
     </div>
   );
+}
+
+function createAppAxesHelper(size: number) {
+  const group = new THREE.Group();
+  const origin = new THREE.Vector3(0, 0, 0);
+
+  group.add(createAxisLine(origin, new THREE.Vector3(size, 0, 0), APP_AXIS_COLORS.x));
+  group.add(createAxisLine(origin, new THREE.Vector3(0, 0, size), APP_AXIS_COLORS.y));
+  group.add(createAxisLine(origin, new THREE.Vector3(0, size, 0), APP_AXIS_COLORS.z));
+
+  return group;
+}
+
+function createAxisLine(start: THREE.Vector3, end: THREE.Vector3, color: string) {
+  const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
+  const material = new THREE.LineBasicMaterial({ color });
+  return new THREE.Line(geometry, material);
 }
 
 function disposeMaterial(material: THREE.Material | THREE.Material[]) {
@@ -322,4 +341,13 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]) {
   }
 
   material.dispose();
+}
+
+function disposeObject(object: THREE.Object3D) {
+  object.traverse((child) => {
+    if (child instanceof THREE.Line) {
+      child.geometry.dispose();
+      disposeMaterial(child.material);
+    }
+  });
 }

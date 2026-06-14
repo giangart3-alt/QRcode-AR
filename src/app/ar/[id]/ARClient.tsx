@@ -41,6 +41,7 @@ type RuntimeStatus = Record<
 
 const AR_SCRIPT = "https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.7/three.js/build/ar-threex.js";
 const CAMERA_PARAMETERS = "https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.7/data/data/camera_para.dat";
+const LAST_POSE_HOLD_MS = 3000;
 
 export function ARClient({ id }: { id: string }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -120,7 +121,7 @@ export function ARClient({ id }: { id: string }) {
       }
 
       window.THREE = THREE;
-      setStatus("marker", "loading AR runtime");
+      setStatus("marker", "loading tracking runtime");
       setMessage("Loading marker tracking...");
 
       try {
@@ -131,7 +132,8 @@ export function ARClient({ id }: { id: string }) {
         return;
       }
 
-      if (!window.THREEx || stopped || !mountRef.current) {
+      const mount = mountRef.current;
+      if (!window.THREEx || stopped || !mount) {
         setStatus("marker", "tracking runtime unavailable");
         setMessage("Unsupported browser. Use the fallback viewer.");
         return;
@@ -153,7 +155,13 @@ export function ARClient({ id }: { id: string }) {
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.15;
-      mountRef.current.appendChild(renderer.domElement);
+      Object.assign(renderer.domElement.style, {
+        position: "absolute",
+        inset: "0",
+        zIndex: "1",
+        pointerEvents: "none"
+      });
+      mount.appendChild(renderer.domElement);
 
       const scene = new THREE.Scene();
       const camera = new THREE.Camera();
@@ -179,7 +187,7 @@ export function ARClient({ id }: { id: string }) {
         displayHeight: window.innerHeight
       });
 
-      setStatus("camera", "permission requested");
+      setStatus("camera", "requesting camera");
       setMessage("Requesting camera permission...");
 
       try {
@@ -196,7 +204,20 @@ export function ARClient({ id }: { id: string }) {
             }
           );
         });
+        const video = arToolkitSource.domElement;
+        video.setAttribute("playsinline", "true");
+        video.muted = true;
+        Object.assign(video.style, {
+          position: "absolute",
+          inset: "0",
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          zIndex: "0"
+        });
+        mount.prepend(video);
         setStatus("camera", "active");
+        setMessage("Camera active. Initializing marker tracking...");
       } catch {
         setStatus("camera", "permission denied");
         setMessage("Camera permission denied. Allow camera access, then reload this page.");
@@ -224,7 +245,7 @@ export function ARClient({ id }: { id: string }) {
         size: mmToMeters(marker.widthMm),
         changeMatrixMode: "modelViewMatrix"
       });
-      setStatus("marker", "official playground pattern loaded");
+      setStatus("marker", `searching (${marker.styleId})`);
 
       resizeHandler = () => {
         arToolkitSource.onResizeElement();
@@ -235,6 +256,18 @@ export function ARClient({ id }: { id: string }) {
       };
       window.addEventListener("resize", resizeHandler);
       resizeHandler();
+
+      cleanupRef.current = () => {
+        stopped = true;
+        window.cancelAnimationFrame(animationFrame);
+        if (resizeHandler) window.removeEventListener("resize", resizeHandler);
+        renderer.dispose();
+        const video = arToolkitSource.domElement;
+        const stream = video.srcObject instanceof MediaStream ? video.srcObject : null;
+        stream?.getTracks().forEach((track) => track.stop());
+        video.remove();
+        renderer.domElement.remove();
+      };
 
       setStatus("model", "loading");
       setMessage("Loading model...");
@@ -262,7 +295,7 @@ export function ARClient({ id }: { id: string }) {
         applySceneTransform(model, activeScene, displayedScale);
         markerRoot.add(model);
         setStatus("model", "loaded");
-        setMessage("Point the camera at the official playground marker.");
+        setMessage("Camera active. Point at the selected marker.");
       } catch (caught) {
         const errorMessage = caught instanceof Error ? caught.message : "Model loading error.";
         setStatus("model", errorMessage);
@@ -271,11 +304,12 @@ export function ARClient({ id }: { id: string }) {
       }
 
       let lastSeen = 0;
-      const graceMs = 550;
+      let markerWasSeen = false;
 
       function updateTrackingState(nextState: string) {
         if (lastTrackingState === nextState) return;
         lastTrackingState = nextState;
+        setStatus("marker", nextState);
         setStatus("tracking", nextState);
         setMessage(nextState);
       }
@@ -286,14 +320,24 @@ export function ARClient({ id }: { id: string }) {
 
         if (arToolkitSource.ready) {
           arToolkitContext.update(arToolkitSource.domElement);
-          if (markerRoot.visible) {
+          const markerVisibleAfterUpdate = markerRoot.visible;
+
+          if (markerVisibleAfterUpdate) {
+            markerWasSeen = true;
             lastSeen = Date.now();
+            setModelOpacity(markerRoot, 1);
             updateTrackingState("marker found");
-          } else if (Date.now() - lastSeen < graceMs) {
+          } else if (!markerWasSeen) {
+            markerRoot.visible = false;
+            updateTrackingState("marker searching");
+          } else if (Date.now() - lastSeen < LAST_POSE_HOLD_MS) {
             markerRoot.visible = true;
-            updateTrackingState("holding last marker pose");
+            setModelOpacity(markerRoot, 0.68);
+            updateTrackingState("marker lost - using last known pose");
           } else {
-            updateTrackingState("marker lost");
+            markerRoot.visible = true;
+            setModelOpacity(markerRoot, 0.28);
+            updateTrackingState("marker lost - model ghosted");
           }
         }
 
@@ -307,6 +351,10 @@ export function ARClient({ id }: { id: string }) {
         window.cancelAnimationFrame(animationFrame);
         if (resizeHandler) window.removeEventListener("resize", resizeHandler);
         renderer.dispose();
+        const video = arToolkitSource.domElement;
+        const stream = video.srcObject instanceof MediaStream ? video.srcObject : null;
+        stream?.getTracks().forEach((track) => track.stop());
+        video.remove();
         renderer.domElement.remove();
       };
     }
@@ -352,7 +400,7 @@ export function ARClient({ id }: { id: string }) {
             className="focus-ring rounded-lg bg-[var(--panel)] px-3 py-3 text-sm font-bold text-[var(--ink)] hover:bg-[var(--soft)]"
             onClick={() => setTrackingResetKey((value) => value + 1)}
           >
-            Retry
+            Retry camera/tracking
           </button>
           <button
             className="focus-ring rounded-lg bg-white/15 px-3 py-3 text-sm font-bold backdrop-blur hover:bg-white/25"
@@ -369,8 +417,12 @@ export function ARClient({ id }: { id: string }) {
                 project: project?.id,
                 activeScene: project ? getActiveSceneForClient(project)?.id : "",
                 modelUrl: project ? getActiveSceneForClient(project)?.modelUrl : "",
+                modelPath: project ? getActiveSceneForClient(project)?.modelPathname : "",
+                markerStyle: project?.marker.styleId,
+                markerSizeMm: project ? `${project.marker.widthMm} x ${project.marker.heightMm}` : "",
                 markerImage: project?.marker.imageUrl,
                 markerPattern: project?.marker.patternUrl,
+                webgl: runtimeStatus.webgl,
                 placement: project ? getActiveSceneForClient(project)?.placement : null,
                 userAgent: navigator.userAgent
               },
@@ -406,5 +458,18 @@ function loadScript(src: string) {
     script.onload = () => resolve();
     script.onerror = () => reject(new Error(`Unable to load ${src}`));
     document.head.appendChild(script);
+  });
+}
+
+function setModelOpacity(root: THREE.Object3D, opacity: number) {
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach((material) => {
+      material.transparent = opacity < 1;
+      material.opacity = opacity;
+      material.needsUpdate = true;
+    });
   });
 }

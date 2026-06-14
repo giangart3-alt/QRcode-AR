@@ -6,14 +6,18 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import {
+  APP_AXIS_COLORS,
+  appPositionMmToThreeMeters,
+  appRotationDegreesToThreeRadians,
+  threePositionMetersToAppMm,
+  threeRotationRadiansToAppDegrees
+} from "@/lib/coordinates";
+import {
   createDefaultPlacement,
   DEFAULT_MARKER_HEIGHT_MM,
   DEFAULT_MARKER_WIDTH_MM,
-  degreesToRadians,
-  metersToMm,
   mmToMeters,
   normalizePlacement,
-  radiansToDegrees,
   type PlacementMetadata
 } from "@/lib/placement";
 import type { ProjectMetadata } from "@/lib/projects";
@@ -44,16 +48,8 @@ export function EditorClient({ id }: { id: string }) {
   const applyPlacementToScene = useCallback((nextPlacement: PlacementMetadata) => {
     const model = modelRef.current;
     if (model) {
-      model.position.set(
-        mmToMeters(nextPlacement.position.x),
-        mmToMeters(nextPlacement.position.y),
-        mmToMeters(nextPlacement.position.z)
-      );
-      model.rotation.set(
-        degreesToRadians(nextPlacement.rotation.x),
-        degreesToRadians(nextPlacement.rotation.y),
-        degreesToRadians(nextPlacement.rotation.z)
-      );
+      model.position.copy(appPositionMmToThreeMeters(nextPlacement.position));
+      model.rotation.copy(appRotationDegreesToThreeRadians(nextPlacement.rotation));
       model.scale.setScalar(nextPlacement.scale);
     }
 
@@ -117,7 +113,7 @@ export function EditorClient({ id }: { id: string }) {
     host.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xfff7ed);
+    scene.background = new THREE.Color(0xf6f7f9);
 
     const camera = new THREE.PerspectiveCamera(48, 1, 0.01, 200);
     const maxMarkerMeters = Math.max(
@@ -133,7 +129,7 @@ export function EditorClient({ id }: { id: string }) {
 
     const ambient = new THREE.AmbientLight(0xffffff, 1.5);
     scene.add(ambient);
-    const hemisphere = new THREE.HemisphereLight(0xffffff, 0xf97316, 2.2);
+    const hemisphere = new THREE.HemisphereLight(0xffffff, 0xd7dee8, 2.2);
     scene.add(hemisphere);
     const directional = new THREE.DirectionalLight(0xffffff, 2.4);
     directional.position.set(2, 4, 3);
@@ -162,11 +158,11 @@ export function EditorClient({ id }: { id: string }) {
     border.rotation.x = -Math.PI / 2;
     markerPlane.add(border);
 
-    const grid = new THREE.GridHelper(maxMarkerMeters, 10, 0xf97316, 0xfed7aa);
+    const grid = new THREE.GridHelper(maxMarkerMeters, 10, 0x8b98aa, 0xd5dbe5);
     grid.position.y = 0.002;
     scene.add(grid);
 
-    const axes = new THREE.AxesHelper(Math.min(maxMarkerMeters * 0.28, 0.3));
+    const axes = createAppAxesHelper(Math.min(maxMarkerMeters * 0.28, 0.3));
     axes.position.set(0, 0.01, 0);
     scene.add(axes);
 
@@ -186,16 +182,8 @@ export function EditorClient({ id }: { id: string }) {
 
       setPlacement((current) => ({
         ...current,
-        position: {
-          x: roundForStorage(metersToMm(model.position.x)),
-          y: roundForStorage(metersToMm(model.position.y)),
-          z: roundForStorage(metersToMm(model.position.z))
-        },
-        rotation: {
-          x: roundForStorage(radiansToDegrees(model.rotation.x)),
-          y: roundForStorage(radiansToDegrees(model.rotation.y)),
-          z: roundForStorage(radiansToDegrees(model.rotation.z))
-        },
+        position: roundVector(threePositionMetersToAppMm(model.position)),
+        rotation: roundVector(threeRotationRadiansToAppDegrees(model.rotation)),
         scale: roundForStorage(
           (Math.abs(model.scale.x) + Math.abs(model.scale.y) + Math.abs(model.scale.z)) / 3
         )
@@ -265,6 +253,7 @@ export function EditorClient({ id }: { id: string }) {
       orbit.dispose();
       texture.dispose();
       markerPlane.geometry.dispose();
+      disposeObject(axes);
       renderer.dispose();
       renderer.domElement.remove();
       modelRef.current = null;
@@ -329,7 +318,7 @@ export function EditorClient({ id }: { id: string }) {
   function centerModel() {
     updatePlacement((current) => ({
       ...current,
-      position: { x: 0, y: current.position.y, z: 0 }
+      position: { x: 0, y: 0, z: current.position.z }
     }));
   }
 
@@ -590,6 +579,40 @@ function formatNumber(value: number) {
 
 function roundForStorage(value: number) {
   return Math.round(value * 1000) / 1000;
+}
+
+function roundVector<T extends { x: number; y: number; z: number }>(vector: T) {
+  return {
+    x: roundForStorage(vector.x),
+    y: roundForStorage(vector.y),
+    z: roundForStorage(vector.z)
+  };
+}
+
+function createAppAxesHelper(size: number) {
+  const group = new THREE.Group();
+  const origin = new THREE.Vector3(0, 0, 0);
+
+  group.add(createAxisLine(origin, new THREE.Vector3(size, 0, 0), APP_AXIS_COLORS.x));
+  group.add(createAxisLine(origin, new THREE.Vector3(0, 0, size), APP_AXIS_COLORS.y));
+  group.add(createAxisLine(origin, new THREE.Vector3(0, size, 0), APP_AXIS_COLORS.z));
+
+  return group;
+}
+
+function createAxisLine(start: THREE.Vector3, end: THREE.Vector3, color: string) {
+  const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
+  const material = new THREE.LineBasicMaterial({ color });
+  return new THREE.Line(geometry, material);
+}
+
+function disposeObject(object: THREE.Object3D) {
+  object.traverse((child) => {
+    if (child instanceof THREE.Line) {
+      child.geometry.dispose();
+      child.material.dispose();
+    }
+  });
 }
 
 function projectPlacement(project: ProjectMetadata) {

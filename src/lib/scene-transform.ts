@@ -1,5 +1,11 @@
 import * as THREE from "three";
-import { degreesToRadians, metersToMm, mmToMeters, radiansToDegrees } from "@/lib/placement";
+import {
+  appPositionMmToThreeMeters,
+  appRotationDegreesToThreeRadians,
+  threePositionMetersToAppMm,
+  threeRotationRadiansToAppDegrees
+} from "@/lib/coordinates";
+import { mmToMeters } from "@/lib/placement";
 import type { MarkerSettings } from "@/lib/placement";
 import type { SceneMetadata } from "@/lib/projects";
 
@@ -43,16 +49,8 @@ export function applySceneTransform(
   scene: SceneMetadata,
   displayedScale: number
 ) {
-  model.position.set(
-    mmToMeters(scene.placement.position.x),
-    mmToMeters(scene.placement.position.y),
-    mmToMeters(scene.placement.position.z)
-  );
-  model.rotation.set(
-    degreesToRadians(scene.placement.rotation.x),
-    degreesToRadians(scene.placement.rotation.y),
-    degreesToRadians(scene.placement.rotation.z)
-  );
+  model.position.copy(appPositionMmToThreeMeters(scene.placement.position));
+  model.rotation.copy(appRotationDegreesToThreeRadians(scene.placement.rotation));
   model.scale.setScalar(displayedScale);
 }
 
@@ -73,16 +71,8 @@ export function sceneTransformFromObject(
     normalizedScale: roundForStorage(normalizedScale),
     placement: {
       ...scene.placement,
-      position: {
-        x: roundForStorage(metersToMm(model.position.x)),
-        y: roundForStorage(metersToMm(model.position.y)),
-        z: roundForStorage(metersToMm(model.position.z))
-      },
-      rotation: {
-        x: roundForStorage(radiansToDegrees(model.rotation.x)),
-        y: roundForStorage(radiansToDegrees(model.rotation.y)),
-        z: roundForStorage(radiansToDegrees(model.rotation.z))
-      },
+      position: roundVector(threePositionMetersToAppMm(model.position)),
+      rotation: roundVector(threeRotationRadiansToAppDegrees(model.rotation)),
       scale: roundForStorage(displayedScale)
     }
   } satisfies SceneMetadata;
@@ -113,6 +103,14 @@ export function fitModelToMarker(scene: SceneMetadata) {
 
 export function roundForStorage(value: number) {
   return Math.round(value * 1000) / 1000;
+}
+
+function roundVector<T extends { x: number; y: number; z: number }>(vector: T) {
+  return {
+    x: roundForStorage(vector.x),
+    y: roundForStorage(vector.y),
+    z: roundForStorage(vector.z)
+  };
 }
 
 function positiveNumber(value: number, fallback: number) {

@@ -1,4 +1,5 @@
 import { del, list, put } from "@vercel/blob";
+import { migrateLegacyYUpPlacementToZUp } from "@/lib/coordinates";
 import {
   createDefaultMarker,
   createDefaultPlacement,
@@ -10,7 +11,7 @@ import {
   type PlacementMetadata
 } from "@/lib/placement";
 
-export const PROJECT_SCHEMA_VERSION = 2;
+export const PROJECT_SCHEMA_VERSION = 3;
 
 export type ScaleMode = "fit" | "architectural";
 
@@ -476,7 +477,7 @@ export function normalizeProjectMetadata(project: LegacyProjectShape): ProjectMe
     markerUrl: urls.markerUrl,
     editorUrl: urls.editorUrl,
     scale: placement.scale,
-    verticalOffset: placement.position.y,
+    verticalOffset: placement.position.z,
     modelUrl: activeScene?.modelUrl || "",
     modelPathname: activeScene?.modelPathname || "",
     modelSize: activeScene?.modelSize || 0,
@@ -521,9 +522,11 @@ export function computeDisplayedScale(scene: Pick<
 }
 
 function normalizeScenes(project: LegacyProjectShape, createdAt: string, updatedAt: string) {
+  const schemaVersion = finiteNumber(project.schemaVersion, 1);
+
   if (Array.isArray(project.scenes) && project.scenes.length > 0) {
     return project.scenes.map((scene, index) =>
-      normalizeScene(scene, createdAt, updatedAt, index)
+      normalizeScene(scene, createdAt, updatedAt, index, schemaVersion)
     );
   }
 
@@ -543,7 +546,8 @@ function normalizeScenes(project: LegacyProjectShape, createdAt: string, updated
         },
         createdAt,
         updatedAt,
-        0
+        0,
+        schemaVersion
       )
     ];
   }
@@ -555,15 +559,17 @@ function normalizeScene(
   scene: Partial<SceneMetadata>,
   fallbackCreatedAt: string,
   fallbackUpdatedAt: string,
-  index: number
+  index: number,
+  schemaVersion: number
 ) {
+  const placement = normalizePlacement(scene.placement, scene.normalizedScale || 1, 0);
   const normalized: SceneMetadata = {
     id: scene.id || `scene-${index + 1}`,
     name: scene.name || `Scene ${index + 1}`,
     modelUrl: scene.modelUrl || "",
     modelPathname: scene.modelPathname || "",
     modelSize: finiteNumber(scene.modelSize, 0),
-    placement: normalizePlacement(scene.placement, scene.normalizedScale || 1, 0),
+    placement: schemaVersion < 3 ? migrateLegacyYUpPlacementToZUp(placement) : placement,
     scaleMode: normalizeScaleMode(scene.scaleMode),
     architecturalScale: positiveNumber(scene.architecturalScale, 100),
     normalizedScale: positiveNumber(scene.normalizedScale, scene.placement?.scale || 1),
