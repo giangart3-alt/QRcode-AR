@@ -140,6 +140,7 @@ export function SceneThreeViewport({
 
     let transform: TransformControls | null = null;
     let transformHelper: ReturnType<TransformControls["getHelper"]> | null = null;
+    let cleanupTransformKeyboard: (() => void) | null = null;
 
     if (editable) {
       transform = new TransformControls(camera, renderer.domElement);
@@ -158,6 +159,27 @@ export function SceneThreeViewport({
         if (!model || !currentScene) return;
         onSceneChange?.(sceneTransformFromObject(currentScene, model, baseFitScaleRef.current));
       });
+
+      const setSnap = (enabled: boolean) => {
+        transform?.setTranslationSnap(enabled ? 0.05 : null);
+        transform?.setRotationSnap(enabled ? THREE.MathUtils.degToRad(45) : null);
+        transform?.setScaleSnap(enabled ? 0.1 : null);
+      };
+      const handleKeyDown = (event: KeyboardEvent) => {
+        if (event.key === "Shift") setSnap(true);
+      };
+      const handleKeyUp = (event: KeyboardEvent) => {
+        if (event.key === "Shift") setSnap(false);
+      };
+
+      window.addEventListener("keydown", handleKeyDown);
+      window.addEventListener("keyup", handleKeyUp);
+      transform.addEventListener("mouseUp", () => setSnap(false));
+
+      cleanupTransformKeyboard = () => {
+        window.removeEventListener("keydown", handleKeyDown);
+        window.removeEventListener("keyup", handleKeyUp);
+      };
     }
 
     async function loadModel() {
@@ -228,6 +250,7 @@ export function SceneThreeViewport({
       window.removeEventListener("resize", resize);
       transform?.detach();
       transform?.dispose();
+      cleanupTransformKeyboard?.();
       transformHelper?.dispose();
       orbit.dispose();
       texture.dispose();
@@ -256,6 +279,22 @@ export function SceneThreeViewport({
   return (
     <div className={`relative min-h-[420px] overflow-hidden bg-[var(--soft)] ${className}`}>
       <div ref={hostRef} className="absolute inset-0" />
+      <div className="pointer-events-none absolute right-4 top-4 z-10 rounded-lg border border-[var(--line)] bg-white/90 p-3 shadow-sm backdrop-blur">
+        <div className="relative h-16 w-16">
+          <span className="absolute left-8 top-8 h-0.5 w-7 origin-left -rotate-[18deg] bg-[#ef4444]" />
+          <span className="absolute left-[3.35rem] top-[1.72rem] text-[10px] font-black text-[#ef4444]">X</span>
+          <span className="absolute left-8 top-8 h-8 w-0.5 origin-bottom bg-[#22c55e]" />
+          <span className="absolute left-[1.7rem] top-0 text-[10px] font-black text-[#22c55e]">Y</span>
+          <span className="absolute left-8 top-8 h-0.5 w-7 origin-left rotate-[45deg] bg-[#3b82f6]" />
+          <span className="absolute left-[3.05rem] top-[3.1rem] text-[10px] font-black text-[#3b82f6]">Z</span>
+          <span className="absolute left-[1.85rem] top-[1.85rem] h-2 w-2 rounded-full bg-[var(--ink)]" />
+        </div>
+      </div>
+      {editable ? (
+        <div className="pointer-events-none absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-full border border-[var(--line)] bg-white/90 px-3 py-2 text-xs font-bold text-[var(--muted)] shadow-sm backdrop-blur">
+          Hold Shift to snap
+        </div>
+      ) : null}
       {!scene ? (
         <ViewportMessage title="No scene selected" body="Add a GLB scene from the left sidebar to begin." />
       ) : !scene.modelUrl ? (

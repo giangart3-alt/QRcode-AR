@@ -1,8 +1,9 @@
-import { list, put } from "@vercel/blob";
+import { del, list, put } from "@vercel/blob";
 import {
   createDefaultMarker,
   createDefaultPlacement,
   MARKER_IMAGE_URL,
+  MARKER_PATTERN_URL,
   normalizeMarker,
   normalizePlacement,
   type MarkerSettings,
@@ -255,6 +256,99 @@ export async function listProjects() {
   return projects.filter((project): project is ProjectMetadata => Boolean(project));
 }
 
+export async function deleteProjectAndAssets(id: string) {
+  const projects = await listProjects();
+  const project = projects.find((item) => item.id === id);
+
+  if (!project) {
+    return null;
+  }
+
+  const remainingProjects = projects.filter((item) => item.id !== id);
+  const assetCandidates = collectProjectAssetReferences(project);
+  const deletedAssets = await deleteUnreferencedBlobReferences(assetCandidates, remainingProjects);
+  const deletedProjectJson = metadataPath(id);
+
+  await del(deletedProjectJson);
+
+  return {
+    deletedProjectId: id,
+    deletedProjectJson,
+    deletedAssets
+  };
+}
+
+export async function deleteSceneAndAssets(projectId: string, sceneId: string) {
+  const projects = await listProjects();
+  const project = projects.find((item) => item.id === projectId);
+
+  if (!project) {
+    return null;
+  }
+
+  const scene = project.scenes.find((item) => item.id === sceneId);
+  if (!scene) {
+    return { project, scene: null, deletedAssets: [] };
+  }
+
+  const scenes = project.scenes.filter((item) => item.id !== sceneId);
+  const activeSceneId = project.activeSceneId === sceneId ? scenes[0]?.id || "" : project.activeSceneId;
+  const updatedProject = normalizeProjectMetadata({
+    ...project,
+    scenes,
+    activeSceneId,
+    updatedAt: new Date().toISOString()
+  });
+  const remainingProjects = projects.map((item) =>
+    item.id === projectId ? updatedProject : item
+  );
+  const deletedAssets = await deleteUnreferencedBlobReferences(
+    collectSceneAssetReferences(scene),
+    remainingProjects
+  );
+
+  await saveProject(updatedProject);
+
+  return {
+    project: updatedProject,
+    scene,
+    deletedAssets
+  };
+}
+
+export async function cleanupOldProjects() {
+  const projects = await listProjects();
+
+  if (projects.length <= 1) {
+    return {
+      keptProject: projects[0] || null,
+      deletedProjects: [],
+      deletedProjectJson: [],
+      deletedAssets: []
+    };
+  }
+
+  const sorted = [...projects].sort((a, b) => {
+    const byUpdatedAt = dateValue(b.updatedAt) - dateValue(a.updatedAt);
+    if (byUpdatedAt !== 0) return byUpdatedAt;
+    return dateValue(b.createdAt) - dateValue(a.createdAt);
+  });
+  const keptProject = sorted[0];
+  const deletedProjects = sorted.slice(1);
+  const deletedProjectJson = deletedProjects.map((project) => metadataPath(project.id));
+  const assetCandidates = deletedProjects.flatMap((project) => collectProjectAssetReferences(project));
+  const deletedAssets = await deleteUnreferencedBlobReferences(assetCandidates, [keptProject]);
+
+  await del(deletedProjectJson);
+
+  return {
+    keptProject,
+    deletedProjects: deletedProjects.map(summarizeProject),
+    deletedProjectJson,
+    deletedAssets
+  };
+}
+
 export function summarizeProject(project: ProjectMetadata): ProjectSummary {
   return {
     id: project.id,
@@ -270,7 +364,84 @@ export function summarizeProject(project: ProjectMetadata): ProjectSummary {
   };
 }
 
-export function normalizeProjectMetadata(project: LegacyProjectShape) {
+function collectProjectAssetReferences(project: ProjectMetadata) {
+  return [
+    ...project.scenes.flatMap((scene) => collectSceneAssetReferences(scene)),
+    ...collectMarkerAssetReferences(project.marker)
+  ];
+}
+
+function collectSceneAssetReferences(scene: SceneMetadata) {
+  return [scene.modelPathname, scene.modelUrl].filter(Boolean);
+}
+
+function collectMarkerAssetReferences(marker: MarkerSettings) {
+  return [marker.imageUrl, marker.patternUrl].filter((value) => {
+    if (!value) return false;
+    if (value === MARKER_IMAGE_URL || value === MARKER_PATTERN_URL) return false;
+    return true;
+  });
+}
+
+async function deleteUnreferencedBlobReferences(
+  candidates: string[],
+  remainingProjects: ProjectMetadata[]
+) {
+  const remainingIdentities = new Set(
+    remainingProjects
+      .flatMap((project) => collectProjectAssetReferences(project))
+      .map(blobIdentity)
+      .filter((value): value is string => Boolean(value))
+  );
+  const deletable = Array.from(
+    new Map(
+      candidates
+        .filter(isDeletableBlobReference)
+        .map((reference) => [blobIdentity(reference), reference] as const)
+        .filter(([identity]) => identity && !remainingIdentities.has(identity))
+    ).values()
+  );
+
+  if (deletable.length > 0) {
+    await del(deletable);
+  }
+
+  return deletable;
+}
+
+function isDeletableBlobReference(value: string) {
+  const identity = blobIdentity(value);
+  if (!identity) return false;
+  if (value.startsWith("/") || value.startsWith("data:")) return false;
+  return (
+    identity.startsWith("models/") ||
+    identity.startsWith("markers/") ||
+    identity.startsWith("generated/") ||
+    identity.startsWith("exports/")
+  );
+}
+
+function blobIdentity(value: string | undefined) {
+  if (!value) return "";
+
+  if (value.startsWith("http://") || value.startsWith("https://")) {
+    try {
+      const url = new URL(value);
+      return decodeURIComponent(url.pathname.replace(/^\/+/, ""));
+    } catch {
+      return "";
+    }
+  }
+
+  return value.replace(/^\/+/, "");
+}
+
+function dateValue(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+export function normalizeProjectMetadata(project: LegacyProjectShape): ProjectMetadata {
   const id = project.id || "project";
   const urls = projectUrls(id);
   const marker = normalizeMarker(

@@ -156,6 +156,87 @@ export function DashboardClient() {
     }
   }
 
+  async function deleteProject(project: ProjectSummary) {
+    const confirmed = window.confirm(
+      `Delete "${project.name}" from Vercel Blob? This removes the project JSON and unreferenced GLB files.`
+    );
+
+    if (!confirmed) return;
+
+    setBusy(true);
+    setError("");
+    setStatus(`Deleting ${project.name}...`);
+
+    try {
+      const response = await fetch(`/api/projects/${project.id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password })
+      });
+      const result = (await response.json()) as {
+        deletedProjectId?: string;
+        deletedAssets?: string[];
+        error?: string;
+      };
+
+      if (!response.ok || !result.deletedProjectId) {
+        throw new Error(result.error || "Unable to delete project.");
+      }
+
+      setQrProjectId((current) => (current === project.id ? "" : current));
+      setQrDataUrl("");
+      await loadProjects(password);
+      setStatus(
+        `Deleted ${project.name}. Removed ${result.deletedAssets?.length || 0} unreferenced asset(s).`
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to delete project.");
+      setStatus("Delete failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cleanTestProjects() {
+    const confirmed = window.confirm(
+      "Clean test projects? This keeps only the most recently updated project and deletes the rest from Vercel Blob."
+    );
+
+    if (!confirmed) return;
+
+    setBusy(true);
+    setError("");
+    setStatus("Cleaning test projects...");
+
+    try {
+      const response = await fetch("/api/projects/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password, confirm: true })
+      });
+      const result = (await response.json()) as {
+        keptProject?: ProjectSummary | null;
+        deletedProjects?: ProjectSummary[];
+        deletedAssets?: string[];
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(result.error || "Unable to clean test projects.");
+      }
+
+      await loadProjects(password);
+      setStatus(
+        `Cleanup complete. Kept ${result.keptProject?.name || "no project"} and deleted ${result.deletedProjects?.length || 0} project(s).`
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to clean test projects.");
+      setStatus("Cleanup failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function showQr(project: ProjectSummary) {
     if (qrProjectId === project.id) {
       setQrProjectId("");
@@ -261,9 +342,9 @@ export function DashboardClient() {
               <p className="text-sm font-semibold text-[var(--muted)]">{status}</p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
+            <div>
               {projects.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-[var(--line)] bg-white p-6 md:col-span-2">
+                <div className="rounded-xl border border-dashed border-[var(--line)] bg-white p-6">
                   <p className="text-sm leading-6 text-[var(--muted)]">
                     {hasPassword
                       ? "No projects found in Vercel Blob yet."
@@ -281,49 +362,109 @@ export function DashboardClient() {
                 </div>
               ) : null}
 
-              {projects.map((project) => (
-                <article key={project.id} className="rounded-xl border border-[var(--line)] bg-white p-5 shadow-sm">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-xl font-black text-[var(--ink)]">{project.name}</h3>
-                      <p className="mt-1 text-sm text-[var(--muted)]">
-                        {project.sceneCount} scene{project.sceneCount === 1 ? "" : "s"} - updated {formatDate(project.updatedAt)}
-                      </p>
-                    </div>
-                    <Link
-                      className="focus-ring rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white hover:bg-[var(--accent-dark)]"
-                      href={`/admin/project/${project.id}`}
-                    >
-                      Open
-                    </Link>
+              {projects.length > 0 ? (
+                <>
+                  <div className="hidden overflow-x-auto rounded-xl border border-[var(--line)] bg-white md:block">
+                    <table className="w-full min-w-[900px] border-collapse text-sm">
+                      <thead className="bg-[var(--soft)] text-left text-xs font-black uppercase tracking-[0.12em] text-[var(--muted)]">
+                        <tr>
+                          <th className="px-4 py-3">Project name</th>
+                          <th className="px-4 py-3">Scenes</th>
+                          <th className="px-4 py-3">Updated</th>
+                          <th className="px-4 py-3 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {projects.map((project) => (
+                          <tr key={project.id} className="border-t border-[var(--line)]">
+                            <td className="px-4 py-3">
+                              <p className="font-black text-[var(--ink)]">{project.name}</p>
+                              <p className="mt-1 max-w-md truncate text-xs text-[var(--muted)]">{project.arUrl}</p>
+                            </td>
+                            <td className="px-4 py-3 font-semibold text-[var(--muted)]">
+                              {project.sceneCount}
+                            </td>
+                            <td className="px-4 py-3 font-semibold text-[var(--muted)]">
+                              {formatDate(project.updatedAt)}
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex justify-end gap-2">
+                                <Link className="button-compact-primary" href={`/admin/project/${project.id}`}>
+                                  Open
+                                </Link>
+                                <button type="button" className="button-compact" onClick={() => showQr(project)}>
+                                  QR
+                                </button>
+                                <CopyButton value={project.arUrl} label="Copy link" compact />
+                                <a className="button-compact" href={`/api/projects/${project.id}/export`}>
+                                  Export JSON
+                                </a>
+                                <button
+                                  type="button"
+                                  className="button-compact-danger"
+                                  disabled={busy}
+                                  onClick={() => deleteProject(project)}
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
 
-                  <div className="mt-5 flex flex-wrap gap-2">
-                    <button type="button" className="button-secondary" onClick={() => showQr(project)}>
-                      QR
-                    </button>
-                    <CopyButton value={project.arUrl} label="Copy link" />
-                    <Link className="button-secondary" href={project.markerUrl}>
-                      Marker
-                    </Link>
-                    <a className="button-secondary" href={`/api/projects/${project.id}/export`}>
-                      Export JSON
-                    </a>
+                  <div className="grid gap-3 md:hidden">
+                    {projects.map((project) => (
+                      <article key={project.id} className="rounded-xl border border-[var(--line)] bg-white p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="text-base font-black text-[var(--ink)]">{project.name}</h3>
+                            <p className="mt-1 text-xs font-semibold text-[var(--muted)]">
+                              {project.sceneCount} scene{project.sceneCount === 1 ? "" : "s"} - {formatDate(project.updatedAt)}
+                            </p>
+                          </div>
+                          <Link className="button-compact-primary shrink-0" href={`/admin/project/${project.id}`}>
+                            Open
+                          </Link>
+                        </div>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <button type="button" className="button-compact" onClick={() => showQr(project)}>
+                            QR
+                          </button>
+                          <CopyButton value={project.arUrl} label="Copy link" compact />
+                          <a className="button-compact" href={`/api/projects/${project.id}/export`}>
+                            Export JSON
+                          </a>
+                          <button
+                            type="button"
+                            className="button-compact-danger"
+                            disabled={busy}
+                            onClick={() => deleteProject(project)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </article>
+                    ))}
                   </div>
+                </>
+              ) : null}
 
-                  {qrProjectId === project.id ? (
-                    <div className="mt-5 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-4">
-                      {qrDataUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={qrDataUrl} alt={`QR code for ${project.name}`} className="mx-auto w-44 rounded-md border border-[var(--line)] bg-white p-2" />
-                      ) : (
-                        <p className="text-sm font-semibold text-[var(--muted)]">Generating QR...</p>
-                      )}
-                      <p className="mt-3 break-all text-xs font-semibold text-[var(--muted)]">{project.arUrl}</p>
-                    </div>
-                  ) : null}
-                </article>
-              ))}
+              {qrProjectId ? (
+                <div className="mt-4 rounded-xl border border-[var(--line)] bg-white p-4">
+                  {qrDataUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={qrDataUrl} alt="Project AR QR code" className="mx-auto w-52 rounded-md border border-[var(--line)] bg-white p-2" />
+                  ) : (
+                    <p className="text-sm font-semibold text-[var(--muted)]">Generating QR...</p>
+                  )}
+                  <p className="mt-3 break-all text-xs font-semibold text-[var(--muted)]">
+                    {projects.find((project) => project.id === qrProjectId)?.arUrl}
+                  </p>
+                </div>
+              ) : null}
             </div>
           </section>
 
@@ -334,7 +475,7 @@ export function DashboardClient() {
             <form onSubmit={importProject} className="mt-4">
               <h2 className="text-lg font-black text-[var(--ink)]">Import JSON</h2>
               <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-                Manual backup import. Existing Blob files are never deleted automatically.
+                Restore a manually exported project backup. Existing Blob model files are kept unless you delete projects or scenes.
               </p>
               <textarea
                 value={importJson}
@@ -350,6 +491,20 @@ export function DashboardClient() {
                 Import project
               </button>
             </form>
+            <div className="mt-5 border-t border-[var(--line)] pt-5">
+              <h2 className="text-lg font-black text-[var(--ink)]">Clean test projects</h2>
+              <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+                Keeps only the most recently updated project and deletes the rest from Vercel Blob.
+              </p>
+              <button
+                type="button"
+                disabled={busy || !password}
+                className="button-compact-danger mt-3"
+                onClick={cleanTestProjects}
+              >
+                Clean test projects
+              </button>
+            </div>
           </details>
         </div>
 

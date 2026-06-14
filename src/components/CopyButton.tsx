@@ -2,7 +2,15 @@
 
 import { useState } from "react";
 
-export function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
+export function CopyButton({
+  value,
+  label = "Copy",
+  compact = false
+}: {
+  value: string;
+  label?: string;
+  compact?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -15,7 +23,7 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
     <button
       type="button"
       onClick={copy}
-      className="focus-ring rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-semibold text-[var(--ink)] transition hover:border-[var(--accent)] hover:bg-[var(--soft)]"
+      className={compact ? "button-compact" : "focus-ring rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm font-semibold text-[var(--ink)] transition hover:border-[var(--accent)] hover:bg-[var(--soft)]"}
     >
       {copied ? "Copied" : label}
     </button>

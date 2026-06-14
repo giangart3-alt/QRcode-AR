@@ -4,6 +4,14 @@ export const DEFAULT_MARKER_WIDTH_MM = 1000;
 export const DEFAULT_MARKER_HEIGHT_MM = 700;
 export const DEFAULT_MARKER_STYLE_ID = "technical-grid";
 
+export type MarkerStyleId = "technical-grid" | "checker" | "minimal";
+
+export const MARKER_STYLES: Array<{ id: MarkerStyleId; label: string }> = [
+  { id: "technical-grid", label: "Technical grid" },
+  { id: "checker", label: "Black/white checker" },
+  { id: "minimal", label: "Minimal high-contrast" }
+];
+
 export type PlacementMetadata = {
   position: {
     x: number;
@@ -56,12 +64,18 @@ export function createDefaultPlacement(
 }
 
 export function createDefaultMarker(): MarkerSettings {
+  return createMarkerSettings();
+}
+
+export function createMarkerSettings(input?: Partial<MarkerSettings>): MarkerSettings {
+  const styleId = normalizeMarkerStyleId(input?.styleId);
+
   return {
-    styleId: DEFAULT_MARKER_STYLE_ID,
-    imageUrl: MARKER_IMAGE_URL,
+    styleId,
+    imageUrl: markerImageUrlForStyle(styleId),
     patternUrl: MARKER_PATTERN_URL,
-    widthMm: DEFAULT_MARKER_WIDTH_MM,
-    heightMm: DEFAULT_MARKER_HEIGHT_MM,
+    widthMm: positiveNumber(input?.widthMm, DEFAULT_MARKER_WIDTH_MM),
+    heightMm: positiveNumber(input?.heightMm, DEFAULT_MARKER_HEIGHT_MM),
     coordinateSystem: {
       origin: "center of marker/playground",
       xAxis: "left/right on marker",
@@ -99,10 +113,11 @@ export function normalizePlacement(
 
 export function normalizeMarker(marker: Partial<MarkerSettings> | null | undefined) {
   const fallback = createDefaultMarker();
+  const styleId = normalizeMarkerStyleId(marker?.styleId);
 
   return {
-    styleId: marker?.styleId || fallback.styleId,
-    imageUrl: marker?.imageUrl || fallback.imageUrl,
+    styleId,
+    imageUrl: markerImageUrlForStyle(styleId),
     patternUrl: marker?.patternUrl || fallback.patternUrl,
     widthMm: positiveNumber(
       marker?.widthMm ?? (marker as { markerWidthMm?: number } | null | undefined)?.markerWidthMm,
@@ -120,6 +135,16 @@ export function normalizeMarker(marker: Partial<MarkerSettings> | null | undefin
       units: "meters" as const
     }
   } satisfies MarkerSettings;
+}
+
+export function markerImageUrlForStyle(styleId: string) {
+  if (styleId === "checker") return CHECKER_MARKER_IMAGE_URL;
+  if (styleId === "minimal") return MINIMAL_MARKER_IMAGE_URL;
+  return MARKER_IMAGE_URL;
+}
+
+function normalizeMarkerStyleId(value: unknown): MarkerStyleId {
+  return value === "checker" || value === "minimal" ? value : DEFAULT_MARKER_STYLE_ID;
 }
 
 export function mmToMeters(value: number) {
@@ -147,3 +172,34 @@ function positiveNumber(value: unknown, fallback: number) {
     ? value
     : fallback;
 }
+
+function svgDataUrl(svg: string) {
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+const CHECKER_MARKER_IMAGE_URL = svgDataUrl(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700">
+  <rect width="1000" height="700" fill="#fff"/>
+  <rect x="24" y="24" width="952" height="652" fill="#fff" stroke="#1c1917" stroke-width="16"/>
+  <g>
+    ${Array.from({ length: 14 }).map((_, y) =>
+      Array.from({ length: 20 }).map((__, x) =>
+        (x + y) % 2 === 0
+          ? `<rect x="${40 + x * 46}" y="${40 + y * 44}" width="46" height="44" fill="#1c1917"/>`
+          : ""
+      ).join("")
+    ).join("")}
+  </g>
+  <rect x="420" y="270" width="160" height="160" fill="#fff" stroke="#1c1917" stroke-width="10"/>
+  <path d="M500 285v130M435 350h130" stroke="#1c1917" stroke-width="10"/>
+</svg>`);
+
+const MINIMAL_MARKER_IMAGE_URL = svgDataUrl(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700">
+  <rect width="1000" height="700" fill="#fff"/>
+  <rect x="24" y="24" width="952" height="652" fill="#fff" stroke="#1c1917" stroke-width="20"/>
+  <rect x="78" y="78" width="844" height="544" fill="none" stroke="#1c1917" stroke-width="6"/>
+  <path d="M500 95v510M95 350h810" stroke="#1c1917" stroke-width="12"/>
+  <circle cx="500" cy="350" r="74" fill="#fff" stroke="#1c1917" stroke-width="14"/>
+  <circle cx="500" cy="350" r="18" fill="#1c1917"/>
+</svg>`);

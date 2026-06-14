@@ -65,7 +65,7 @@ export function ProjectViewerClient({ projectId }: { projectId: string }) {
 
   return (
     <main className="h-screen overflow-hidden bg-[var(--ink)] text-[var(--panel)]">
-      <header className="flex h-16 items-center justify-between gap-3 border-b border-white/10 bg-black/35 px-4">
+      <header className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-black/35 px-4 py-2">
         <div className="min-w-0">
           <h1 className="truncate text-lg font-black">{project?.name || "Project viewer"}</h1>
           <p className="truncate text-xs font-semibold text-white/60">{status}</p>
@@ -75,24 +75,21 @@ export function ProjectViewerClient({ projectId }: { projectId: string }) {
             <Link className="focus-ring rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[var(--ink)] hover:bg-[var(--accent-dark)]" href={project.arUrl}>
               Open AR
             </Link>
-            <Link className="focus-ring rounded-lg border border-white/20 bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15" href={project.markerUrl}>
-              Open marker
-            </Link>
             <CopyButton value={project.viewUrl} label="Copy link" />
           </div>
         ) : null}
       </header>
 
-      <div className="grid h-[calc(100vh-4rem)] grid-cols-[minmax(0,1fr)_320px]">
+      <div className="grid min-h-[calc(100vh-4rem)] lg:h-[calc(100vh-4rem)] lg:grid-cols-[minmax(0,1fr)_320px]">
         <SceneThreeViewport
           scene={activeScene}
           marker={project?.marker || defaultMarkerForRender()}
-          className="h-full"
+          className="min-h-[60vh] lg:h-full"
           onStatusChange={setStatus}
           onMetricsChange={setMetrics}
         />
 
-        <aside className="overflow-y-auto border-l border-white/10 bg-black/30 p-5">
+        <aside className="overflow-y-auto border-t border-white/10 bg-black/30 p-5 lg:border-l lg:border-t-0">
           {error || sceneError ? (
             <p className="rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-4 text-sm font-semibold text-[var(--ink)]">
               {error || sceneError}

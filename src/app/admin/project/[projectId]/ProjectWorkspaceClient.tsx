@@ -6,7 +6,13 @@ import QRCode from "qrcode";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
 import { SceneThreeViewport, type TransformMode } from "@/components/SceneThreeViewport";
-import { createDefaultPlacement } from "@/lib/placement";
+import {
+  MARKER_STYLES,
+  createDefaultPlacement,
+  createMarkerSettings,
+  type MarkerSettings,
+  type MarkerStyleId
+} from "@/lib/placement";
 import { fitModelToMarker, roundForStorage, type SceneScaleMetrics } from "@/lib/scene-transform";
 import type { ProjectMetadata, ScaleMode, SceneMetadata } from "@/lib/projects";
 
@@ -25,9 +31,25 @@ type UploadRouteResponse = {
 const MAX_GLB_SIZE_BYTES = 500 * 1024 * 1024;
 const MULTIPART_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const SCALE_PRESETS = [50, 100, 200, 500, 1000];
+const PRINT_PRESETS = [
+  { label: "A4", widthMm: 297, heightMm: 210 },
+  { label: "A3", widthMm: 420, heightMm: 297 },
+  { label: "A2", widthMm: 594, heightMm: 420 },
+  { label: "A1", widthMm: 841, heightMm: 594 },
+  { label: "A0", widthMm: 1189, heightMm: 841 },
+  { label: "2A0", widthMm: 1682, heightMm: 1189 },
+  { label: "4A0", widthMm: 2378, heightMm: 1682 }
+];
+const SCREEN_PRESETS = [
+  { label: "16:9", widthPx: 1600, heightPx: 900 },
+  { label: "16:10", widthPx: 1600, heightPx: 1000 },
+  { label: "Full HD", widthPx: 1920, heightPx: 1080 },
+  { label: "4K", widthPx: 3840, heightPx: 2160 },
+  { label: "8K", widthPx: 7680, heightPx: 4320 }
+];
 
 export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
-  const [password, setPassword] = useState(() =>
+  const [password] = useState(() =>
     typeof window === "undefined" ? "" : window.sessionStorage.getItem("adminPassword") || ""
   );
   const [project, setProject] = useState<ProjectMetadata | null>(null);
@@ -39,6 +61,12 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
   const [metrics, setMetrics] = useState<SceneScaleMetrics | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState("");
+  const [markerOpen, setMarkerOpen] = useState(false);
+  const [markerMode, setMarkerMode] = useState<"print" | "screen">("print");
+  const [customMarkerMm, setCustomMarkerMm] = useState({ widthMm: 1000, heightMm: 700 });
+  const [customScreenPx, setCustomScreenPx] = useState({ widthPx: 1920, heightPx: 1080 });
+  const [scenesOpen, setScenesOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [status, setStatus] = useState("Loading project...");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -284,39 +312,93 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     }
 
     setQrOpen(true);
+    await ensureQrDataUrl();
+  }
+
+  async function openMarkerModal() {
+    setMarkerOpen(true);
+    await ensureQrDataUrl();
+  }
+
+  async function ensureQrDataUrl() {
+    if (!project || qrDataUrl) return;
+
     setQrDataUrl("");
     setError("");
 
     try {
-      setQrDataUrl(await QRCode.toDataURL(project.arUrl, { margin: 1, width: 240 }));
+      setQrDataUrl(await QRCode.toDataURL(project.arUrl, { margin: 1, width: 260 }));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to generate QR code.");
     }
   }
 
-  async function removeScene(sceneId: string) {
+  async function deleteScene(sceneId: string) {
     if (!project) return;
 
     const scene = project.scenes.find((item) => item.id === sceneId);
     if (!scene) return;
 
     const confirmed = window.confirm(
-      `Remove "${scene.name}" from this project JSON? The GLB file in Vercel Blob will not be deleted.`
+      `Delete "${scene.name}" from this project? Its GLB will be deleted from Vercel Blob if no other project references it.`
     );
     if (!confirmed) return;
 
-    const scenes = project.scenes.filter((item) => item.id !== sceneId);
-    const activeSceneId =
-      project.activeSceneId === sceneId ? scenes[0]?.id || "" : project.activeSceneId;
-    const updatedProject = {
-      ...project,
-      scenes,
-      activeSceneId
-    };
+    setBusy(true);
+    setError("");
+    setStatus("Deleting scene...");
 
+    try {
+      const response = await fetch(`/api/projects/${projectId}/scenes/${sceneId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password })
+      });
+      const result = (await response.json()) as {
+        project?: ProjectMetadata;
+        deletedAssets?: string[];
+        error?: string;
+      };
+
+      if (!response.ok || !result.project) {
+        throw new Error(result.error || "Unable to delete scene.");
+      }
+
+      window.sessionStorage.setItem("adminPassword", password);
+      setProject(result.project);
+      setSelectedSceneId(result.project.activeSceneId || result.project.scenes[0]?.id || "");
+      setInspectorOpen(false);
+      setStatus(`Scene deleted. Removed ${result.deletedAssets?.length || 0} unreferenced asset(s).`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to delete scene.");
+      setStatus("Delete scene failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateMarker(marker: MarkerSettings, nextStatus = "Marker updated.") {
+    if (!project) return;
+    const updatedProject = { ...project, marker };
     setProject(updatedProject);
-    setSelectedSceneId(activeSceneId || scenes[0]?.id || "");
-    await saveProject(updatedProject, "Scene removed. GLB file remains in Blob.");
+    await saveProject(updatedProject, nextStatus);
+  }
+
+  async function setMarkerStyle(styleId: MarkerStyleId) {
+    if (!project) return;
+    await updateMarker(createMarkerSettings({ ...project.marker, styleId }), "Marker style saved.");
+  }
+
+  async function setMarkerSize(widthMm: number, heightMm: number, label: string) {
+    if (!project) return;
+    await updateMarker(
+      createMarkerSettings({
+        ...project.marker,
+        widthMm,
+        heightMm
+      }),
+      `${label} marker size saved.`
+    );
   }
 
   function updateProjectName(name: string) {
@@ -398,10 +480,10 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
   return (
     <main className="h-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
-      <header className="flex h-16 items-center justify-between gap-3 border-b border-[var(--line)] bg-white px-4">
+      <header className="flex min-h-16 items-center justify-between gap-3 border-b border-[var(--line)] bg-white px-3 py-2 md:px-4">
         <div className="flex min-w-0 items-center gap-3">
-          <Link className="button-secondary shrink-0" href="/admin/dashboard">
-            Back to dashboard
+          <Link className="button-compact shrink-0" href="/admin/dashboard">
+            Back
           </Link>
           <div className="min-w-0">
             <h1 className="truncate text-lg font-black text-[var(--ink)]">
@@ -413,14 +495,25 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
         {project ? (
           <div className="relative flex shrink-0 flex-wrap items-center justify-end gap-2">
-            <Link className="button-secondary" href={project.markerUrl}>
-              Print / Export Marker
-            </Link>
-            <button type="button" className="button-secondary" onClick={toggleQr}>
+            <button type="button" className="button-compact lg:hidden" onClick={() => setScenesOpen(true)}>
+              Scenes
+            </button>
+            <button
+              type="button"
+              className="button-compact lg:hidden"
+              disabled={!selectedScene}
+              onClick={() => setInspectorOpen(true)}
+            >
+              Inspector
+            </button>
+            <button type="button" className="button-compact" onClick={openMarkerModal}>
+              Marker
+            </button>
+            <button type="button" className="button-compact" onClick={toggleQr}>
               QR
             </button>
-            <CopyButton value={project.arUrl} label="Copy AR link" />
-            <CopyButton value={project.viewUrl} label="Copy Viewer link" />
+            <CopyButton value={project.arUrl} label="Copy AR link" compact />
+            <CopyButton value={project.viewUrl} label="Copy Viewer link" compact />
             {qrOpen ? (
               <div className="absolute right-0 top-14 z-20 w-72 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-xl">
                 {qrDataUrl ? (
@@ -430,31 +523,43 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
                   <p className="text-sm font-semibold text-[var(--muted)]">Generating QR...</p>
                 )}
                 <p className="mt-3 break-all text-xs font-semibold text-[var(--muted)]">{project.arUrl}</p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <CopyButton value={project.arUrl} label="Copy AR link" compact />
+                  <a className="button-compact" href={project.arUrl}>
+                    Open AR
+                  </a>
+                  <a className="button-compact col-span-2" href={project.viewUrl}>
+                    Open viewer
+                  </a>
+                </div>
               </div>
             ) : null}
           </div>
         ) : null}
       </header>
 
-      <div className={selectedScene ? "grid h-[calc(100vh-4rem)] grid-cols-[300px_minmax(0,1fr)_360px]" : "grid h-[calc(100vh-4rem)] grid-cols-[300px_minmax(0,1fr)]"}>
-        <aside className="overflow-y-auto border-r border-[var(--line)] bg-white p-4">
+      <div className={selectedScene ? "relative h-[calc(100vh-4rem)] lg:grid lg:grid-cols-[300px_minmax(0,1fr)_360px]" : "relative h-[calc(100vh-4rem)] lg:grid lg:grid-cols-[300px_minmax(0,1fr)]"}>
+        {scenesOpen ? (
+          <button
+            type="button"
+            aria-label="Close scenes"
+            className="fixed inset-0 z-20 bg-black/30 lg:hidden"
+            onClick={() => setScenesOpen(false)}
+          />
+        ) : null}
+        <aside className={`${scenesOpen ? "fixed inset-y-0 left-0 z-30 w-[min(22rem,88vw)]" : "hidden"} overflow-y-auto border-r border-[var(--line)] bg-white p-4 lg:relative lg:inset-auto lg:z-auto lg:block lg:w-auto`}>
+          <div className="mb-4 flex items-center justify-between lg:hidden">
+            <h2 className="text-sm font-black uppercase tracking-[0.14em] text-[var(--ink)]">Scenes</h2>
+            <button type="button" className="button-compact" onClick={() => setScenesOpen(false)}>
+              Close
+            </button>
+          </div>
           <label className="block text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">
             Project name
             <input
               value={project?.name || ""}
               onChange={(event) => updateProjectName(event.target.value)}
               className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-sm font-semibold normal-case tracking-normal text-[var(--ink)] shadow-inner"
-            />
-          </label>
-
-          <label className="mt-4 block text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">
-            Admin password
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-sm font-semibold normal-case tracking-normal text-[var(--ink)] shadow-inner"
-              autoComplete="current-password"
             />
           </label>
 
@@ -470,24 +575,32 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
                   key={scene.id}
                   className={
                     scene.id === selectedScene?.id
-                      ? "rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-3"
-                      : "rounded-lg border border-[var(--line)] bg-white p-3"
+                      ? "rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-2"
+                      : "rounded-lg border border-[var(--line)] bg-white p-2"
                   }
                 >
-                  <button
-                    type="button"
-                    className="focus-ring w-full rounded-md text-left"
-                    onClick={() => setSelectedSceneId(scene.id)}
-                  >
-                    <span className="block truncate text-sm font-black text-[var(--ink)]">{scene.name}</span>
-                    <span className="mt-1 block truncate text-xs text-[var(--muted)]">
-                      {scene.id === project.activeSceneId ? "Active scene" : scene.modelPathname || "No GLB"}
-                    </span>
-                  </button>
-                  <div className="mt-3 flex gap-2">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
                     <button
                       type="button"
-                      className={scene.id === project.activeSceneId ? "focus-ring flex-1 rounded-lg bg-[var(--ink)] px-3 py-2 text-xs font-semibold text-white" : "button-secondary flex-1 px-3 py-2 text-xs"}
+                      className="focus-ring min-w-0 rounded-md text-left"
+                      onClick={() => {
+                        setSelectedSceneId(scene.id);
+                        setScenesOpen(false);
+                      }}
+                    >
+                      <span className="block truncate text-sm font-black text-[var(--ink)]">{scene.name}</span>
+                      <span className="mt-1 block truncate text-[11px] text-[var(--muted)]">
+                        {scene.id === project.activeSceneId ? "Active" : scene.modelPathname || "No GLB"}
+                      </span>
+                    </button>
+                    <span className={scene.id === project.activeSceneId ? "rounded-full bg-[var(--ink)] px-2 py-1 text-[10px] font-black text-white" : "rounded-full border border-[var(--line)] px-2 py-1 text-[10px] font-black text-[var(--muted)]"}>
+                      {scene.id === project.activeSceneId ? "ON" : "Scene"}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      className={scene.id === project.activeSceneId ? "button-compact-primary flex-1" : "button-compact flex-1"}
                       disabled={working || scene.id === project.activeSceneId}
                       onClick={() => setActiveScene(scene.id)}
                     >
@@ -495,11 +608,11 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
                     </button>
                     <button
                       type="button"
-                      className="button-secondary px-3 py-2 text-xs"
+                      className="button-compact-danger"
                       disabled={working}
-                      onClick={() => removeScene(scene.id)}
+                      onClick={() => deleteScene(scene.id)}
                     >
-                      Remove
+                      Delete
                     </button>
                   </div>
                 </div>
@@ -546,17 +659,18 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
           </button>
         </aside>
 
-        <section className="flex min-w-0 flex-col">
-          <div className="flex h-14 items-center justify-between border-b border-[var(--line)] bg-white px-4">
-            <div className="flex rounded-lg border border-[var(--line)] bg-[var(--soft)] p-1">
-              {(["translate", "rotate"] as TransformMode[]).map((mode) => (
+        <section className="relative flex h-full min-w-0 flex-col">
+          <div className="pointer-events-none absolute left-4 top-4 z-20 flex max-w-[calc(100%-8rem)] flex-wrap items-center gap-2">
+            <div className="pointer-events-auto flex rounded-lg border border-[var(--line)] bg-white/90 p-1 shadow-sm backdrop-blur">
+              {(["translate", "rotate", "scale"] as TransformMode[]).map((mode) => (
                 <button
                   key={mode}
                   type="button"
+                  title={`Transform mode: ${mode}`}
                   className={
                     transformMode === mode
-                      ? "rounded-md bg-[var(--ink)] px-3 py-2 text-sm font-semibold text-white"
-                      : "rounded-md px-3 py-2 text-sm font-semibold text-[var(--muted)] hover:bg-white"
+                      ? "rounded-md bg-[var(--ink)] px-3 py-2 text-xs font-black text-white"
+                      : "rounded-md px-3 py-2 text-xs font-black text-[var(--muted)] hover:bg-[var(--soft)]"
                   }
                   onClick={() => setTransformMode(mode)}
                 >
@@ -565,7 +679,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
               ))}
             </div>
             {metrics ? (
-              <p className="text-sm font-semibold text-[var(--muted)]">
+              <p className="pointer-events-auto rounded-lg border border-[var(--line)] bg-white/90 px-3 py-2 text-xs font-bold text-[var(--muted)] shadow-sm backdrop-blur">
                 Model {formatNumber(metrics.modelWidthM)}m x {formatNumber(metrics.modelDepthM)}m - scale {formatNumber(metrics.displayedScale)}
               </p>
             ) : null}
@@ -588,18 +702,34 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
           />
         </section>
 
+        {selectedScene && project && inspectorOpen ? (
+          <button
+            type="button"
+            aria-label="Close inspector"
+            className="fixed inset-0 z-20 bg-black/30 lg:hidden"
+            onClick={() => setInspectorOpen(false)}
+          />
+        ) : null}
         {selectedScene && project ? (
-          <aside className="overflow-y-auto border-l border-[var(--line)] bg-white p-4">
+          <aside className={`${inspectorOpen ? "fixed inset-x-0 bottom-0 z-30 max-h-[82vh]" : "hidden"} overflow-y-auto rounded-t-2xl border-l border-[var(--line)] bg-white p-4 shadow-2xl lg:relative lg:inset-auto lg:z-auto lg:block lg:max-h-none lg:rounded-none lg:shadow-none`}>
+            <div className="mb-4 flex items-center justify-between lg:hidden">
+              <h2 className="text-sm font-black uppercase tracking-[0.14em] text-[var(--ink)]">Inspector</h2>
+              <button type="button" className="button-compact" onClick={() => setInspectorOpen(false)}>
+                Close
+              </button>
+            </div>
             <SceneInspector
               busy={working}
               project={project}
               scene={selectedScene}
+              metrics={metrics}
               replaceFile={replaceFile}
               uploadProgress={uploadProgress}
               uploadStage={uploadStage}
               onReplaceFile={setReplaceFile}
               onReplaceModel={replaceSceneModel}
               onSetActive={() => setActiveScene(selectedScene.id)}
+              onDelete={() => deleteScene(selectedScene.id)}
               onSave={() => saveProject(project, "Scene saved.")}
               onSceneNameChange={(name) => updateScene(selectedScene.id, (scene) => ({ ...scene, name }))}
               onScaleModeChange={(scaleMode) => setScaleMode(selectedScene.id, scaleMode)}
@@ -621,7 +751,253 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
           </aside>
         ) : null}
       </div>
+      {project && markerOpen ? (
+        <MarkerModal
+          project={project}
+          qrDataUrl={qrDataUrl}
+          mode={markerMode}
+          customMm={customMarkerMm}
+          customPx={customScreenPx}
+          busy={working}
+          onClose={() => setMarkerOpen(false)}
+          onModeChange={setMarkerMode}
+          onCustomMmChange={setCustomMarkerMm}
+          onCustomPxChange={setCustomScreenPx}
+          onStyleChange={setMarkerStyle}
+          onSetSize={setMarkerSize}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function MarkerModal({
+  project,
+  qrDataUrl,
+  mode,
+  customMm,
+  customPx,
+  busy,
+  onClose,
+  onModeChange,
+  onCustomMmChange,
+  onCustomPxChange,
+  onStyleChange,
+  onSetSize
+}: {
+  project: ProjectMetadata;
+  qrDataUrl: string;
+  mode: "print" | "screen";
+  customMm: { widthMm: number; heightMm: number };
+  customPx: { widthPx: number; heightPx: number };
+  busy: boolean;
+  onClose: () => void;
+  onModeChange: (mode: "print" | "screen") => void;
+  onCustomMmChange: (value: { widthMm: number; heightMm: number }) => void;
+  onCustomPxChange: (value: { widthPx: number; heightPx: number }) => void;
+  onStyleChange: (styleId: MarkerStyleId) => void;
+  onSetSize: (widthMm: number, heightMm: number, label: string) => void;
+}) {
+  const marker = project.marker;
+  const svgHref = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+    buildMarkerSvg(project.name, marker, project.arUrl, qrDataUrl)
+  )}`;
+
+  async function downloadPng() {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1600;
+    canvas.height = Math.round(1600 * (marker.heightMm / marker.widthMm));
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    context.fillStyle = "#fff7ed";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    const markerImage = await loadImage(marker.imageUrl);
+    const qrImage = qrDataUrl ? await loadImage(qrDataUrl) : null;
+    const padding = canvas.width * 0.04;
+    const qrSize = canvas.width * 0.16;
+
+    context.drawImage(markerImage, padding, padding, canvas.width - padding * 2 - qrSize - padding, canvas.height - padding * 2);
+    if (qrImage) {
+      const qrX = canvas.width - padding - qrSize;
+      context.fillStyle = "#fff";
+      context.fillRect(qrX - 8, padding - 8, qrSize + 16, qrSize + 16);
+      context.drawImage(qrImage, qrX, padding, qrSize, qrSize);
+    }
+
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) return;
+
+    const href = URL.createObjectURL(blob);
+    triggerDownload(href, `${safeFileName(project.name)}-marker.png`);
+    window.setTimeout(() => URL.revokeObjectURL(href), 1000);
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 grid place-items-center bg-black/45 p-3">
+      <section className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl border border-[var(--line)] bg-white p-4 shadow-2xl md:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] pb-4">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Marker export</p>
+            <h2 className="text-2xl font-black text-[var(--ink)]">{project.name}</h2>
+          </div>
+          <button type="button" className="button-compact" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="rounded-xl border border-[var(--line)] bg-[var(--soft)] p-3">
+            <div className="grid gap-3 rounded-lg bg-white p-3 md:grid-cols-[minmax(0,1fr)_180px]">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={marker.imageUrl} alt={`${project.name} marker`} className="w-full rounded-md border border-[var(--line)]" />
+              <div className="grid content-start gap-3">
+                {qrDataUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={qrDataUrl} alt="AR QR code" className="w-full rounded-md border border-[var(--line)] bg-white p-2" />
+                ) : (
+                  <div className="grid aspect-square place-items-center rounded-md border border-[var(--line)] text-sm font-semibold text-[var(--muted)]">
+                    QR loading
+                  </div>
+                )}
+                <p className="break-all text-xs font-semibold text-[var(--muted)]">{project.arUrl}</p>
+                <p className="text-xs font-black text-[var(--ink)]">
+                  {marker.widthMm} x {marker.heightMm} mm
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <aside className="space-y-4">
+            <label className="block text-sm font-semibold text-[var(--ink)]">
+              Marker style
+              <select
+                value={marker.styleId}
+                onChange={(event) => onStyleChange(event.target.value as MarkerStyleId)}
+                className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
+              >
+                {MARKER_STYLES.map((style) => (
+                  <option key={style.id} value={style.id}>
+                    {style.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div>
+              <div className="grid grid-cols-2 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-1">
+                {(["print", "screen"] as const).map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    className={mode === item ? "rounded-md bg-[var(--ink)] px-3 py-2 text-sm font-black text-white" : "rounded-md px-3 py-2 text-sm font-black text-[var(--muted)]"}
+                    onClick={() => onModeChange(item)}
+                  >
+                    {item === "print" ? "Print" : "Screen"}
+                  </button>
+                ))}
+              </div>
+
+              {mode === "print" ? (
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {PRINT_PRESETS.map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      disabled={busy}
+                      className="button-compact"
+                      onClick={() => onSetSize(preset.widthMm, preset.heightMm, preset.label)}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                  <CustomSizeFields
+                    unit="mm"
+                    width={customMm.widthMm}
+                    height={customMm.heightMm}
+                    onChange={(width, height) => onCustomMmChange({ widthMm: width, heightMm: height })}
+                    onApply={() => onSetSize(customMm.widthMm, customMm.heightMm, "Custom mm")}
+                  />
+                </div>
+              ) : (
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {SCREEN_PRESETS.map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      disabled={busy}
+                      className="button-compact"
+                      onClick={() => onSetSize(preset.widthPx, preset.heightPx, preset.label)}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                  <CustomSizeFields
+                    unit="px"
+                    width={customPx.widthPx}
+                    height={customPx.heightPx}
+                    onChange={(width, height) => onCustomPxChange({ widthPx: width, heightPx: height })}
+                    onApply={() => onSetSize(customPx.widthPx, customPx.heightPx, "Custom px")}
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <CopyButton value={project.arUrl} label="Copy AR link" compact />
+              <a className="button-compact" href={svgHref} download={`${safeFileName(project.name)}-marker.svg`}>
+                Download SVG
+              </a>
+              <button type="button" className="button-compact" onClick={downloadPng}>
+                Download PNG
+              </button>
+              <button type="button" className="button-compact-primary" onClick={() => window.print()}>
+                Print
+              </button>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function CustomSizeFields({
+  unit,
+  width,
+  height,
+  onChange,
+  onApply
+}: {
+  unit: "mm" | "px";
+  width: number;
+  height: number;
+  onChange: (width: number, height: number) => void;
+  onApply: () => void;
+}) {
+  return (
+    <div className="col-span-2 grid grid-cols-[1fr_1fr_auto] gap-2 rounded-lg border border-[var(--line)] p-2">
+      <input
+        type="number"
+        min="1"
+        value={width}
+        onChange={(event) => onChange(Number(event.target.value) || width, height)}
+        className="focus-ring w-full rounded-md border border-[var(--line)] px-2 py-2 text-sm"
+        aria-label={`Custom width ${unit}`}
+      />
+      <input
+        type="number"
+        min="1"
+        value={height}
+        onChange={(event) => onChange(width, Number(event.target.value) || height)}
+        className="focus-ring w-full rounded-md border border-[var(--line)] px-2 py-2 text-sm"
+        aria-label={`Custom height ${unit}`}
+      />
+      <button type="button" className="button-compact-primary" onClick={onApply}>
+        Custom {unit}
+      </button>
+    </div>
   );
 }
 
@@ -629,12 +1005,14 @@ function SceneInspector({
   busy,
   project,
   scene,
+  metrics,
   replaceFile,
   uploadProgress,
   uploadStage,
   onReplaceFile,
   onReplaceModel,
   onSetActive,
+  onDelete,
   onSave,
   onSceneNameChange,
   onScaleModeChange,
@@ -650,12 +1028,14 @@ function SceneInspector({
   busy: boolean;
   project: ProjectMetadata;
   scene: SceneMetadata;
+  metrics: SceneScaleMetrics | null;
   replaceFile: File | null;
   uploadProgress: number;
   uploadStage: UploadStage;
   onReplaceFile: (file: File | null) => void;
   onReplaceModel: (event: FormEvent) => void;
   onSetActive: () => void;
+  onDelete: () => void;
   onSave: () => void;
   onSceneNameChange: (name: string) => void;
   onScaleModeChange: (mode: ScaleMode) => void;
@@ -669,54 +1049,67 @@ function SceneInspector({
   onRotate: (axis: "x" | "y" | "z") => void;
 }) {
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <section>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Scene inspector</p>
-            <h2 className="mt-1 text-xl font-black text-[var(--ink)]">{scene.name}</h2>
-          </div>
-          <button
-            type="button"
-            className={scene.id === project.activeSceneId ? "focus-ring rounded-lg bg-[var(--ink)] px-3 py-2 text-sm font-semibold text-white" : "button-secondary"}
-            disabled={busy || scene.id === project.activeSceneId}
-            onClick={onSetActive}
-          >
-            {scene.id === project.activeSceneId ? "Active" : "Set active"}
-          </button>
-        </div>
-
-        <label className="mt-4 block text-sm font-semibold text-[var(--ink)]">
-          Scene name
-          <input
-            value={scene.name}
-            onChange={(event) => onSceneNameChange(event.target.value)}
-            className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)] shadow-inner"
-          />
-        </label>
+        <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Scene inspector</p>
+        <h2 className="mt-1 truncate text-xl font-black text-[var(--ink)]">{scene.name}</h2>
       </section>
 
-      <form onSubmit={onReplaceModel} className="rounded-xl border border-[var(--line)] bg-[var(--soft)] p-3">
-        <h3 className="text-sm font-black text-[var(--ink)]">
-          {scene.modelUrl ? "Replace GLB" : "Upload GLB"}
-        </h3>
-        <p className="mt-2 break-all text-xs leading-5 text-[var(--muted)]">
-          {scene.modelPathname || "No model uploaded for this scene."}
-        </p>
-        <input
-          type="file"
-          accept=".glb,model/gltf-binary,application/octet-stream"
-          onChange={(event) => onReplaceFile(event.target.files?.[0] || null)}
-          className="focus-ring mt-3 w-full rounded-lg border border-dashed border-[var(--line)] bg-white px-3 py-3 text-xs text-[var(--ink)] file:mr-3 file:rounded-md file:border-0 file:bg-[var(--ink)] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-white"
-        />
-        <button
-          type="submit"
-          disabled={busy || !replaceFile}
-          className="focus-ring mt-3 w-full rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white hover:bg-[var(--accent-dark)] disabled:opacity-60"
-        >
-          {uploadStage === "uploading" ? `Uploading ${uploadProgress}%` : "Upload GLB"}
-        </button>
-      </form>
+      <details className="rounded-xl border border-[var(--line)] bg-white p-3">
+        <summary className="cursor-pointer text-sm font-black text-[var(--ink)]">
+          Scene settings
+        </summary>
+        <div className="mt-4 space-y-4">
+          <label className="block text-sm font-semibold text-[var(--ink)]">
+            Scene name
+            <input
+              value={scene.name}
+              onChange={(event) => onSceneNameChange(event.target.value)}
+              className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)] shadow-inner"
+            />
+          </label>
+
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">Model path</p>
+            <p className="mt-2 break-all rounded-lg border border-[var(--line)] bg-[var(--soft)] p-2 text-xs leading-5 text-[var(--muted)]">
+              {scene.modelPathname || "No model uploaded for this scene."}
+            </p>
+          </div>
+
+          <form onSubmit={onReplaceModel}>
+            <h3 className="text-sm font-black text-[var(--ink)]">
+              {scene.modelUrl ? "Replace GLB" : "Upload GLB"}
+            </h3>
+            <input
+              type="file"
+              accept=".glb,model/gltf-binary,application/octet-stream"
+              onChange={(event) => onReplaceFile(event.target.files?.[0] || null)}
+              className="focus-ring mt-3 w-full rounded-lg border border-dashed border-[var(--line)] bg-white px-3 py-3 text-xs text-[var(--ink)] file:mr-3 file:rounded-md file:border-0 file:bg-[var(--ink)] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-white"
+            />
+            <button
+              type="submit"
+              disabled={busy || !replaceFile}
+              className="button-compact-primary mt-3 w-full"
+            >
+              {uploadStage === "uploading" ? `Uploading ${uploadProgress}%` : "Upload GLB"}
+            </button>
+          </form>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              className={scene.id === project.activeSceneId ? "button-compact-primary" : "button-compact"}
+              disabled={busy || scene.id === project.activeSceneId}
+              onClick={onSetActive}
+            >
+              {scene.id === project.activeSceneId ? "Active" : "Set active"}
+            </button>
+            <button type="button" className="button-compact-danger" disabled={busy} onClick={onDelete}>
+              Delete scene
+            </button>
+          </div>
+        </div>
+      </details>
 
       <section className="rounded-xl border border-[var(--line)] p-3">
         <h3 className="text-sm font-black text-[var(--ink)]">Position (mm)</h3>
@@ -746,7 +1139,7 @@ function SceneInspector({
         </div>
         <div className="mt-3 grid grid-cols-3 gap-2">
           {(["x", "y", "z"] as const).map((axis) => (
-            <button key={axis} type="button" className="button-secondary px-2" onClick={() => onRotate(axis)}>
+            <button key={axis} type="button" className="button-compact" onClick={() => onRotate(axis)}>
               +90 {axis.toUpperCase()}
             </button>
           ))}
@@ -755,23 +1148,36 @@ function SceneInspector({
 
       <section className="rounded-xl border border-[var(--line)] p-3">
         <h3 className="text-sm font-black text-[var(--ink)]">Scale</h3>
-        <label className="mt-3 block text-sm font-semibold text-[var(--ink)]">
-          Scale mode
-          <select
-            value={scene.scaleMode}
-            onChange={(event) => onScaleModeChange(event.target.value as ScaleMode)}
-            className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
-          >
-            <option value="fit">Fit to playground</option>
-            <option value="architectural">Architectural scale</option>
-          </select>
-        </label>
+        <div className="mt-3 grid grid-cols-2 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-1">
+          {(["fit", "architectural"] as ScaleMode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className={scene.scaleMode === mode ? "rounded-md bg-[var(--ink)] px-3 py-2 text-xs font-black text-white" : "rounded-md px-3 py-2 text-xs font-black text-[var(--muted)]"}
+              onClick={() => onScaleModeChange(mode)}
+            >
+              {mode === "fit" ? "Fit" : "Architectural"}
+            </button>
+          ))}
+        </div>
         {scene.scaleMode === "fit" ? (
-          <NumberField
-            label="Normalized fit scale"
-            value={scene.normalizedScale}
-            onChange={onNormalizedScaleChange}
-          />
+          <div className="mt-3">
+            <NumberField
+              label="Normalized fit scale"
+              value={scene.normalizedScale}
+              onChange={onNormalizedScaleChange}
+            />
+            <input
+              type="range"
+              min="0.1"
+              max="3"
+              step="0.1"
+              value={scene.normalizedScale}
+              onChange={(event) => onNormalizedScaleChange(event.target.value)}
+              className="mt-3 w-full accent-[var(--accent)]"
+            />
+            <p className="mt-2 text-xs font-semibold text-[var(--muted)]">1 = fit to marker</p>
+          </div>
         ) : (
           <>
             <label className="mt-3 block text-sm font-semibold text-[var(--ink)]">
@@ -798,6 +1204,11 @@ function SceneInspector({
             />
           </>
         )}
+        {metrics ? (
+          <p className="mt-3 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-2 text-xs font-bold text-[var(--muted)]">
+            Displayed: {formatNumber(metrics.modelWidthM * metrics.displayedScale)}m x {formatNumber(metrics.modelDepthM * metrics.displayedScale)}m
+          </p>
+        ) : null}
         <p className="mt-3 text-xs leading-5 text-[var(--muted)]">
           Fit mode computes scale from the GLB X/Z footprint and marker size. Architectural
           mode treats GLB units as meters and displays them at the selected drawing scale.
@@ -805,19 +1216,19 @@ function SceneInspector({
       </section>
 
       <section className="grid grid-cols-2 gap-2">
-        <button type="button" className="button-secondary" onClick={onReset}>
+        <button type="button" className="button-compact" onClick={onReset}>
           Reset
         </button>
-        <button type="button" className="button-secondary" onClick={onCenter}>
+        <button type="button" className="button-compact" onClick={onCenter}>
           Center
         </button>
-        <button type="button" className="button-secondary" onClick={onFit}>
+        <button type="button" className="button-compact" onClick={onFit}>
           Fit playground
         </button>
         <button
           type="button"
           disabled={busy}
-          className="focus-ring rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white hover:bg-[var(--accent-dark)] disabled:opacity-60"
+          className="button-compact-primary"
           onClick={onSave}
         >
           Save scene
@@ -947,21 +1358,57 @@ function NumberField({
   );
 }
 
+function buildMarkerSvg(projectName: string, marker: MarkerSettings, arUrl: string, qrDataUrl: string) {
+  const width = marker.widthMm;
+  const height = marker.heightMm;
+  const padding = Math.max(width * 0.035, 16);
+  const qrSize = Math.min(width * 0.18, height * 0.28);
+  const markerWidth = width - padding * 3 - qrSize;
+  const markerHeight = height - padding * 2;
+  const qrX = padding * 2 + markerWidth;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
+  <rect width="100%" height="100%" fill="#fff7ed"/>
+  <image href="${escapeXml(marker.imageUrl)}" x="${padding}" y="${padding}" width="${markerWidth}" height="${markerHeight}" preserveAspectRatio="xMidYMid meet"/>
+  <rect x="${qrX - 4}" y="${padding - 4}" width="${qrSize + 8}" height="${qrSize + 8}" fill="#fff" stroke="#fed7aa"/>
+  ${qrDataUrl ? `<image href="${qrDataUrl}" x="${qrX}" y="${padding}" width="${qrSize}" height="${qrSize}"/>` : ""}
+  <text x="${qrX}" y="${padding + qrSize + 28}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">Print at 100% scale</text>
+  <text x="${qrX}" y="${padding + qrSize + 54}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="11">${escapeXml(projectName)}</text>
+  <text x="${qrX}" y="${padding + qrSize + 72}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="8">${escapeXml(arUrl)}</text>
+</svg>`;
+}
+
+function loadImage(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Unable to load marker export image."));
+    image.src = src;
+  });
+}
+
+function triggerDownload(href: string, fileName: string) {
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = fileName;
+  anchor.click();
+}
+
+function safeFileName(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "marker";
+}
+
+function escapeXml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 function defaultMarkerForRender() {
-  return {
-    styleId: "technical-grid",
-    imageUrl: "/markers/playground.png",
-    patternUrl: "/markers/playground.patt",
-    widthMm: 1000,
-    heightMm: 700,
-    coordinateSystem: {
-      origin: "center of marker/playground",
-      xAxis: "left/right on marker",
-      yAxis: "vertical height above marker",
-      zAxis: "forward/back on marker",
-      units: "meters" as const
-    }
-  };
+  return createMarkerSettings();
 }
 
 function parseDecimal(value: string, fallback: number) {

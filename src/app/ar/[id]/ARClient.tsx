@@ -338,13 +338,7 @@ export function ARClient({ id }: { id: string }) {
                 className="focus-ring rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-[var(--ink)] hover:bg-[var(--accent-dark)]"
                 href={project.viewUrl}
               >
-                Open fallback viewer
-              </Link>
-              <Link
-                className="focus-ring rounded-lg bg-white/15 px-3 py-2 text-sm font-semibold backdrop-blur hover:bg-white/25"
-                href={project.markerUrl}
-              >
-                Marker
+                Open viewer
               </Link>
             </>
           ) : null}
@@ -358,7 +352,7 @@ export function ARClient({ id }: { id: string }) {
             className="focus-ring rounded-lg bg-[var(--panel)] px-3 py-3 text-sm font-bold text-[var(--ink)] hover:bg-[var(--soft)]"
             onClick={() => setTrackingResetKey((value) => value + 1)}
           >
-            Reset tracking
+            Retry
           </button>
           <button
             className="focus-ring rounded-lg bg-white/15 px-3 py-3 text-sm font-bold backdrop-blur hover:bg-white/25"

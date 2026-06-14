@@ -4,6 +4,7 @@ import { normalizeMarker, normalizePlacement } from "@/lib/placement";
 import {
   BlobConfigurationError,
   computeDisplayedScale,
+  deleteProjectAndAssets,
   getActiveScene,
   loadProject,
   normalizeProjectMetadata,
@@ -148,6 +149,36 @@ export async function PATCH(
   }
 }
 
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const body = await readOptionalJson<{ password?: string }>(request);
+    const auth = validateAdminPassword(readAdminPassword(request, body?.password));
+
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status });
+    }
+
+    const result = await deleteProjectAndAssets(id);
+
+    if (!result) {
+      return NextResponse.json({ error: "Project not found." }, { status: 404 });
+    }
+
+    return NextResponse.json(result);
+  } catch (error) {
+    const message =
+      error instanceof BlobConfigurationError || error instanceof Error
+        ? error.message
+        : "Unable to delete project.";
+
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+}
+
 function normalizeSceneForSave(scene: SceneMetadata) {
   const scaleMode: ScaleMode = scene.scaleMode === "architectural" ? "architectural" : "fit";
   const architecturalScale =
@@ -168,4 +199,12 @@ function normalizeSceneForSave(scene: SceneMetadata) {
 
   nextScene.placement.scale = computeDisplayedScale(nextScene);
   return nextScene;
+}
+
+async function readOptionalJson<T>(request: Request) {
+  try {
+    return (await request.json()) as T;
+  } catch {
+    return null;
+  }
 }

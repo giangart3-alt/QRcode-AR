@@ -64,6 +64,71 @@ input {
   border-color: var(--accent);
 }
 
+.button-compact,
+.button-compact-primary,
+.button-compact-danger {
+  align-items: center;
+  border-radius: 0.45rem;
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 800;
+  justify-content: center;
+  min-height: 2.25rem;
+  padding: 0.5rem 0.7rem;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    opacity 160ms ease;
+}
+
+.button-compact {
+  background: #fff7ed;
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.button-compact:hover {
+  background: var(--soft);
+  border-color: var(--accent);
+}
+
+.button-compact-primary {
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  color: #fff7ed;
+}
+
+.button-compact-primary:hover {
+  background: #000;
+  border-color: #000;
+}
+
+.button-compact-danger {
+  background: #fff7ed;
+  border: 1px solid var(--accent);
+  color: var(--ink);
+}
+
+.button-compact-danger:hover {
+  background: var(--accent);
+  color: #fff7ed;
+}
+
+.button-compact:focus-visible,
+.button-compact-primary:focus-visible,
+.button-compact-danger:focus-visible {
+  outline: 3px solid rgba(249, 115, 22, 0.35);
+  outline-offset: 2px;
+}
+
+.button-compact:disabled,
+.button-compact-primary:disabled,
+.button-compact-danger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 @media print {
   .no-print {
     display: none !important;
