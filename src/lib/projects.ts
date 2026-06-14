@@ -377,7 +377,14 @@ function collectSceneAssetReferences(scene: SceneMetadata) {
 }
 
 function collectMarkerAssetReferences(marker: MarkerSettings) {
-  return [marker.imageUrl, marker.patternUrl].filter((value) => {
+  return [
+    marker.imageUrl,
+    marker.boardImageUrl,
+    marker.patternUrl,
+    marker.trackingMarkerImageUrl,
+    marker.trackingMarkerPngUrl,
+    marker.trackingMarkerPatternUrl
+  ].filter((value) => {
     if (!value) return false;
     if (value === MARKER_IMAGE_URL || value === MARKER_PATTERN_URL) return false;
     return true;

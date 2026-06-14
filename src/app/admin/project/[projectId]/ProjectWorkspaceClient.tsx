@@ -11,6 +11,7 @@ import {
   MARKER_STYLES,
   createDefaultPlacement,
   createMarkerSettings,
+  getMarkerBoardImageUrl,
   screenPhysicalSizeFromPixels,
   type MarkerSettings,
   type MarkerOutputMode,
@@ -423,7 +424,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
   function setMarkerStyle(styleId: MarkerStyleId) {
     if (!project) return;
-    updateMarkerDraft(createMarkerSettings({ ...project.marker, styleId }), "Marker style updated.");
+    updateMarkerDraft(createMarkerSettings({ ...project.marker, styleId }), "Board style updated.");
   }
 
   function setPrintMarkerSize(widthMm: number, heightMm: number, label: string) {
@@ -627,7 +628,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
               {project?.name || projectId}
             </h1>
             <p className="truncate text-xs text-[var(--muted)]">
-              {saveStateLabel} · {status}
+              {saveStateLabel} - {status}
             </p>
           </div>
         </div>
@@ -959,6 +960,7 @@ function MarkerModal({
   onSetScreenSize: (widthPx: number, heightPx: number, label: string) => void;
 }) {
   const marker = project.marker;
+  const boardImageUrl = getMarkerBoardImageUrl(marker);
   const markerSaveLabel = {
     saved: "Saved",
     dirty: "Unsaved",
@@ -979,7 +981,7 @@ function MarkerModal({
     context.fillStyle = "#fff7ed";
     context.fillRect(0, 0, canvas.width, canvas.height);
 
-    const markerImage = await loadImage(marker.imageUrl);
+    const markerImage = await loadImage(boardImageUrl);
     const qrImage = qrDataUrl ? await loadImage(qrDataUrl) : null;
     const padding = canvas.width * 0.04;
     const qrSize = canvas.width * 0.16;
@@ -990,6 +992,9 @@ function MarkerModal({
       context.fillStyle = "#fff";
       context.fillRect(qrX - 8, padding - 8, qrSize + 16, qrSize + 16);
       context.drawImage(qrImage, qrX, padding, qrSize, qrSize);
+      context.fillStyle = "#1c1917";
+      context.font = `${Math.max(12, Math.round(canvas.width * 0.012))}px Arial`;
+      context.fillText("AR tracking marker: default-ar-tracker", qrX, padding + qrSize + 32);
     }
 
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
@@ -1006,7 +1011,7 @@ function MarkerModal({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] pb-4">
           <div>
             <h2 className="text-lg font-semibold text-[var(--ink)]">Marker settings</h2>
-            <p className="mt-1 text-xs text-[var(--muted)]">{markerSaveLabel} · {project.name}</p>
+            <p className="mt-1 text-xs text-[var(--muted)]">{markerSaveLabel} - {project.name}</p>
           </div>
           <button type="button" className="button-compact-primary" disabled={busy} onClick={onApply}>
             Apply changes
@@ -1017,7 +1022,7 @@ function MarkerModal({
           <div className="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
             <div className="grid gap-3 rounded-md bg-white p-3 md:grid-cols-[minmax(0,1fr)_180px]">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={marker.imageUrl} alt={`${project.name} marker`} className="w-full rounded-md border border-[var(--line)]" />
+              <img src={boardImageUrl} alt={`${project.name} printable board`} className="w-full rounded-md border border-[var(--line)]" />
               <div className="grid content-start gap-3">
                 {qrDataUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -1029,7 +1034,20 @@ function MarkerModal({
                 )}
                 <p className="break-all text-xs font-semibold text-[var(--muted)]">{project.arUrl}</p>
                 <p className="text-xs font-semibold text-[var(--ink)]">
-                  {marker.widthMm} x {marker.heightMm} mm
+                  Board {marker.widthMm} x {marker.heightMm} mm
+                </p>
+                <div className="rounded-md border border-[var(--line)] bg-white p-2">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={marker.trackingMarkerImageUrl} alt="AR tracking marker preview" className="mx-auto aspect-square w-20" />
+                  <p className="mt-2 text-center text-xs font-semibold text-[var(--ink)]">
+                    {marker.trackingMarkerId}
+                  </p>
+                  <p className="text-center text-[10px] font-semibold text-[var(--muted)]">
+                    {marker.trackingMarkerSizeOnBoardMm}mm AR target
+                  </p>
+                </div>
+                <p className="text-xs leading-5 text-[var(--muted)]">
+                  The board is the printable playground. The tracking marker is the AR target.
                 </p>
                 {marker.outputMode === "screen" && marker.screen ? (
                   <p className="text-xs text-[var(--muted)]">
@@ -1042,9 +1060,9 @@ function MarkerModal({
 
           <aside className="space-y-4">
             <label className="block text-xs font-semibold text-[var(--ink)]">
-              Marker style
+              Board style
               <select
-                value={marker.styleId}
+                value={marker.boardStyle}
                 onChange={(event) => onStyleChange(event.target.value as MarkerStyleId)}
                 className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
               >
@@ -1148,6 +1166,12 @@ function MarkerModal({
               <button type="button" className="button-compact" onClick={downloadPng}>
                 Download PNG
               </button>
+              <a className="button-compact" href={marker.trackingMarkerImageUrl} download={`${safeFileName(project.name)}-tracking-marker.svg`}>
+                Tracking SVG
+              </a>
+              <a className="button-compact" href={marker.trackingMarkerPngUrl} download={`${safeFileName(project.name)}-tracking-marker.png`}>
+                Tracking PNG
+              </a>
               <button type="button" className="button-compact-primary" onClick={() => window.print()}>
                 Print
               </button>
@@ -1566,15 +1590,18 @@ function buildMarkerSvg(projectName: string, marker: MarkerSettings, arUrl: stri
   const markerWidth = width - padding * 3 - qrSize;
   const markerHeight = height - padding * 2;
   const qrX = padding * 2 + markerWidth;
+  const boardImageUrl = getMarkerBoardImageUrl(marker);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
   <rect width="100%" height="100%" fill="#fff7ed"/>
-  <image href="${escapeXml(marker.imageUrl)}" x="${padding}" y="${padding}" width="${markerWidth}" height="${markerHeight}" preserveAspectRatio="xMidYMid meet"/>
+  <image href="${escapeXml(boardImageUrl)}" x="${padding}" y="${padding}" width="${markerWidth}" height="${markerHeight}" preserveAspectRatio="xMidYMid meet"/>
   <rect x="${qrX - 4}" y="${padding - 4}" width="${qrSize + 8}" height="${qrSize + 8}" fill="#fff" stroke="#fed7aa"/>
   ${qrDataUrl ? `<image href="${qrDataUrl}" x="${qrX}" y="${padding}" width="${qrSize}" height="${qrSize}"/>` : ""}
   <text x="${qrX}" y="${padding + qrSize + 28}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">Print at 100% scale</text>
   <text x="${qrX}" y="${padding + qrSize + 54}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="11">${escapeXml(projectName)}</text>
-  <text x="${qrX}" y="${padding + qrSize + 72}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="8">${escapeXml(arUrl)}</text>
+  <text x="${qrX}" y="${padding + qrSize + 74}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="8">AR tracking marker: ${escapeXml(marker.trackingMarkerId)}</text>
+  <text x="${qrX}" y="${padding + qrSize + 90}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="8">Board: ${marker.widthMm}mm x ${marker.heightMm}mm - Tracker: ${marker.trackingMarkerSizeOnBoardMm}mm</text>
+  <text x="${qrX}" y="${padding + qrSize + 108}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="8">${escapeXml(arUrl)}</text>
 </svg>`;
 }
 

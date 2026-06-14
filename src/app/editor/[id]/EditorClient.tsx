@@ -16,6 +16,8 @@ import {
   createDefaultPlacement,
   DEFAULT_MARKER_HEIGHT_MM,
   DEFAULT_MARKER_WIDTH_MM,
+  boardImageUrlForStyle,
+  getMarkerBoardImageUrl,
   mmToMeters,
   normalizePlacement,
   type PlacementMetadata
@@ -135,16 +137,61 @@ export function EditorClient({ id }: { id: string }) {
     directional.position.set(2, 4, 3);
     scene.add(directional);
 
-    const texture = new THREE.TextureLoader().load(marker.imageUrl);
-    texture.colorSpace = THREE.SRGBColorSpace;
+    const boardImageUrl = getMarkerBoardImageUrl(marker);
+    const fallbackBoardImageUrl = boardImageUrlForStyle(
+      "technical-grid",
+      marker.widthMm,
+      marker.heightMm,
+      marker.trackingMarkerSizeOnBoardMm,
+      marker.trackingMarkerPositionOnBoard
+    );
+    const fallbackTexture = createFallbackBoardTexture(marker.widthMm, marker.heightMm);
+    let boardTexture: THREE.Texture = fallbackTexture;
+    const boardMaterial = new THREE.MeshBasicMaterial({
+      map: boardTexture,
+      color: 0xffffff,
+      side: THREE.DoubleSide
+    });
+    const textureLoader = new THREE.TextureLoader();
+    textureLoader.setCrossOrigin("anonymous");
+
+    const applyBoardTexture = (nextTexture: THREE.Texture) => {
+      nextTexture.colorSpace = THREE.SRGBColorSpace;
+      nextTexture.needsUpdate = true;
+      if (stopped) {
+        nextTexture.dispose();
+        return;
+      }
+
+      boardTexture.dispose();
+      boardTexture = nextTexture;
+      boardMaterial.map = nextTexture;
+      boardMaterial.needsUpdate = true;
+    };
+
+    const loadFallbackBoardTexture = () => {
+      textureLoader.load(
+        fallbackBoardImageUrl,
+        applyBoardTexture,
+        undefined,
+        (fallbackError) => {
+          console.error("Unable to load fallback board texture.", fallbackError);
+        }
+      );
+    };
+
+    textureLoader.load(
+      boardImageUrl,
+      applyBoardTexture,
+      undefined,
+      (textureError) => {
+        console.error("Unable to load board texture. Falling back to technical grid.", textureError);
+        loadFallbackBoardTexture();
+      }
+    );
     const markerPlane = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
-      new THREE.MeshStandardMaterial({
-        map: texture,
-        roughness: 0.8,
-        metalness: 0,
-        side: THREE.DoubleSide
-      })
+      boardMaterial
     );
     markerPlane.rotation.x = -Math.PI / 2;
     markerPlane.receiveShadow = true;
@@ -251,8 +298,9 @@ export function EditorClient({ id }: { id: string }) {
       transform.dispose();
       transformHelper.dispose();
       orbit.dispose();
-      texture.dispose();
+      boardTexture.dispose();
       markerPlane.geometry.dispose();
+      disposeMaterial(markerPlane.material);
       disposeObject(axes);
       renderer.dispose();
       renderer.domElement.remove();
@@ -308,7 +356,7 @@ export function EditorClient({ id }: { id: string }) {
     if (!project) return;
     setPlacement({
       ...createDefaultPlacement(project.scale, project.verticalOffset),
-      markerImage: project.marker.imageUrl,
+      markerImage: getMarkerBoardImageUrl(project.marker),
       markerWidthMm: project.marker.widthMm,
       markerHeightMm: project.marker.heightMm
     });
@@ -615,10 +663,82 @@ function disposeObject(object: THREE.Object3D) {
   });
 }
 
+function disposeMaterial(material: THREE.Material | THREE.Material[]) {
+  if (Array.isArray(material)) {
+    material.forEach((item) => item.dispose());
+    return;
+  }
+
+  material.dispose();
+}
+
+function createFallbackBoardTexture(widthMm: number, heightMm: number) {
+  const width = 1024;
+  const height = Math.max(512, Math.round(width * (heightMm / Math.max(widthMm, 1))));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+
+  if (context) {
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.strokeStyle = "#111827";
+    context.lineWidth = 14;
+    context.strokeRect(20, 20, width - 40, height - 40);
+    context.strokeStyle = "#cbd5e1";
+    context.lineWidth = 2;
+
+    for (let index = 1; index < 10; index += 1) {
+      const x = (width * index) / 10;
+      context.beginPath();
+      context.moveTo(x, 24);
+      context.lineTo(x, height - 24);
+      context.stroke();
+    }
+
+    for (let index = 1; index < 8; index += 1) {
+      const y = (height * index) / 8;
+      context.beginPath();
+      context.moveTo(24, y);
+      context.lineTo(width - 24, y);
+      context.stroke();
+    }
+
+    const markerSize = Math.min(width, height) * 0.34;
+    const markerX = width / 2 - markerSize / 2;
+    const markerY = height / 2 - markerSize / 2;
+    drawFallbackTracker(context, markerX, markerY, markerSize);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function drawFallbackTracker(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  size: number
+) {
+  const scale = size / 256;
+  context.fillStyle = "#000000";
+  context.fillRect(x, y, size, size);
+  context.fillStyle = "#ffffff";
+  context.fillRect(x + 32 * scale, y + 32 * scale, 192 * scale, 192 * scale);
+  context.fillStyle = "#000000";
+  context.fillRect(x + 52 * scale, y + 52 * scale, 58 * scale, 58 * scale);
+  context.fillRect(x + 136 * scale, y + 52 * scale, 68 * scale, 34 * scale);
+  context.fillRect(x + 148 * scale, y + 86 * scale, 34 * scale, 94 * scale);
+  context.fillRect(x + 72 * scale, y + 144 * scale, 96 * scale, 34 * scale);
+  context.fillRect(x + 184 * scale, y + 164 * scale, 24 * scale, 44 * scale);
+}
+
 function projectPlacement(project: ProjectMetadata) {
   return {
     ...normalizePlacement(project.placement, project.scale, project.verticalOffset),
-    markerImage: project.marker.imageUrl,
+    markerImage: getMarkerBoardImageUrl(project.marker),
     markerWidthMm: project.marker.widthMm,
     markerHeightMm: project.marker.heightMm
   };

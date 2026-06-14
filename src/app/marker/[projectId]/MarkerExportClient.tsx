@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
-import type { MarkerSettings } from "@/lib/placement";
+import { getMarkerBoardImageUrl, type MarkerSettings } from "@/lib/placement";
 import { PrintButton } from "../PrintButton";
 
 type ExportPreset = {
@@ -45,6 +45,7 @@ export function MarkerExportClient({
   const [customMm, setCustomMm] = useState({ width: 1000, height: 700 });
   const [customPx, setCustomPx] = useState({ width: 1920, height: 1080 });
   const [pngStatus, setPngStatus] = useState("");
+  const boardImageUrl = useMemo(() => getMarkerBoardImageUrl(marker), [marker]);
 
   const exportSize = useMemo(() => {
     if (presetLabel === "Custom mm") {
@@ -84,7 +85,7 @@ export function MarkerExportClient({
       context.font = `${Math.max(18, Math.round(canvas.width * 0.025))}px Arial`;
       context.fillText(projectName, Math.round(canvas.width * 0.04), Math.round(canvas.height * 0.08));
 
-      const markerImage = await loadImage(marker.imageUrl);
+      const markerImage = await loadImage(boardImageUrl);
       const qrImage = await loadImage(qrDataUrl);
       const gap = canvas.width * 0.035;
       const qrSize = Math.min(canvas.width * 0.18, canvas.height * 0.28);
@@ -102,6 +103,7 @@ export function MarkerExportClient({
       context.fillStyle = "#1c1917";
       context.font = `${Math.max(12, Math.round(canvas.width * 0.012))}px Arial`;
       context.fillText("Print at 100% scale", qrX, markerY + qrSize + 34);
+      context.fillText("AR tracking marker: default-ar-tracker", qrX, markerY + qrSize + 60);
 
       const blob = await new Promise<Blob>((resolve, reject) => {
         canvas.toBlob((nextBlob) => {
@@ -132,7 +134,7 @@ export function MarkerExportClient({
           <div className="grid gap-4 rounded-lg border border-[var(--line)] bg-white p-4 md:grid-cols-[minmax(0,1fr)_180px] print:border-0">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={marker.imageUrl}
+              src={boardImageUrl}
               alt={`${projectName} marker playground`}
               className="h-auto w-full rounded-lg border border-[var(--line)] print:rounded-none"
             />
@@ -154,6 +156,10 @@ export function MarkerExportClient({
               Print at <strong>100% scale</strong>.
             </p>
             <p>
+              AR tracking marker: <strong>{marker.trackingMarkerId}</strong>,{" "}
+              <strong>{marker.trackingMarkerSizeOnBoardMm}mm</strong> square.
+            </p>
+            <p>
               QR target: <strong>{arUrl}</strong>
             </p>
           </div>
@@ -166,6 +172,12 @@ export function MarkerExportClient({
             <button type="button" className="button-secondary" onClick={downloadPng}>
               Download PNG
             </button>
+            <a className="button-secondary" href={marker.trackingMarkerImageUrl} download={`${safeFileName(projectName)}-tracking-marker.svg`}>
+              Tracking SVG
+            </a>
+            <a className="button-secondary" href={marker.trackingMarkerPngUrl} download={`${safeFileName(projectName)}-tracking-marker.png`}>
+              Tracking PNG
+            </a>
           </div>
           {pngStatus ? <p className="mt-3 text-sm font-semibold text-[var(--muted)]">{pngStatus}</p> : null}
 
@@ -267,15 +279,18 @@ function buildMarkerSvg({
   const markerWidth = width - margin * 2 - qrSize - gap;
   const markerHeight = Math.min(height * 0.72, markerWidth * (marker.heightMm / marker.widthMm));
   const qrX = markerX + markerWidth + gap;
+  const boardImageUrl = getMarkerBoardImageUrl(marker);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}${unit}" height="${height}${unit}" viewBox="0 0 ${width} ${height}">
   <rect width="100%" height="100%" fill="#fff7ed"/>
   <text x="${margin}" y="${height * 0.08}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${Math.max(14, width * 0.025)}" font-weight="800">${escapeXml(projectName)}</text>
-  <image href="${escapeXml(marker.imageUrl)}" x="${markerX}" y="${markerY}" width="${markerWidth}" height="${markerHeight}" preserveAspectRatio="xMidYMid meet"/>
+  <image href="${escapeXml(boardImageUrl)}" x="${markerX}" y="${markerY}" width="${markerWidth}" height="${markerHeight}" preserveAspectRatio="xMidYMid meet"/>
   <rect x="${qrX - 3}" y="${markerY - 3}" width="${qrSize + 6}" height="${qrSize + 6}" fill="#ffffff" stroke="#fed7aa"/>
   <image href="${qrDataUrl}" x="${qrX}" y="${markerY}" width="${qrSize}" height="${qrSize}"/>
   <text x="${qrX}" y="${markerY + qrSize + height * 0.045}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${Math.max(8, width * 0.012)}" font-weight="800">Print at 100% scale</text>
-  <text x="${qrX}" y="${markerY + qrSize + height * 0.075}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${Math.max(6, width * 0.008)}">${escapeXml(arUrl)}</text>
+  <text x="${qrX}" y="${markerY + qrSize + height * 0.075}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${Math.max(6, width * 0.008)}">AR tracking marker: ${escapeXml(marker.trackingMarkerId)}</text>
+  <text x="${qrX}" y="${markerY + qrSize + height * 0.102}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${Math.max(6, width * 0.008)}">Board: ${marker.widthMm}mm x ${marker.heightMm}mm - Tracker: ${marker.trackingMarkerSizeOnBoardMm}mm</text>
+  <text x="${qrX}" y="${markerY + qrSize + height * 0.13}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${Math.max(6, width * 0.007)}">${escapeXml(arUrl)}</text>
 </svg>`;
 }
 

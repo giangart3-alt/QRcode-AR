@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { mmToMeters } from "@/lib/placement";
+import { getMarkerBoardImageUrl, getTrackingMarkerPatternUrl, mmToMeters } from "@/lib/placement";
 import { applySceneTransform, computeBaseFitScaleFromObject, computeSceneDisplayScale } from "@/lib/scene-transform";
 import type { ProjectMetadata, SceneMetadata } from "@/lib/projects";
 import { loadGltfModel } from "@/lib/three-gltf";
@@ -108,6 +108,8 @@ export function ARClient({ id }: { id: string }) {
     const currentProject = project;
     const activeScene = getActiveSceneForClient(currentProject);
     const marker = currentProject.marker;
+    const trackingPatternUrl = getTrackingMarkerPatternUrl(marker);
+    const trackingMarkerSizeM = mmToMeters(marker.trackingMarkerSizeOnBoardMm);
     let stopped = false;
     let animationFrame = 0;
     let resizeHandler: (() => void) | null = null;
@@ -170,14 +172,21 @@ export function ARClient({ id }: { id: string }) {
       const markerRoot = new THREE.Group();
       markerRoot.visible = false;
       scene.add(markerRoot);
+      const boardRoot = new THREE.Group();
+      boardRoot.position.set(
+        -mmToMeters(marker.trackingMarkerPositionOnBoard.xMm),
+        0,
+        mmToMeters(marker.trackingMarkerPositionOnBoard.yMm)
+      );
+      markerRoot.add(boardRoot);
 
       const ambient = new THREE.AmbientLight(0xffffff, 1.6);
-      markerRoot.add(ambient);
+      boardRoot.add(ambient);
       const hemisphere = new THREE.HemisphereLight(0xffffff, 0xf97316, 2.8);
-      markerRoot.add(hemisphere);
+      boardRoot.add(hemisphere);
       const directional = new THREE.DirectionalLight(0xffffff, 2.8);
       directional.position.set(0.5, 1.4, 0.8);
-      markerRoot.add(directional);
+      boardRoot.add(directional);
 
       const arToolkitSource = new window.THREEx.ArToolkitSource({
         sourceType: "webcam",
@@ -241,11 +250,11 @@ export function ARClient({ id }: { id: string }) {
 
       new window.THREEx.ArMarkerControls(arToolkitContext, markerRoot, {
         type: "pattern",
-        patternUrl: marker.patternUrl,
-        size: mmToMeters(marker.widthMm),
+        patternUrl: trackingPatternUrl,
+        size: trackingMarkerSizeM,
         changeMatrixMode: "modelViewMatrix"
       });
-      setStatus("marker", `searching (${marker.styleId})`);
+      setStatus("marker", `tracking marker loaded (${marker.trackingMarkerId})`);
 
       resizeHandler = () => {
         arToolkitSource.onResizeElement();
@@ -293,9 +302,9 @@ export function ARClient({ id }: { id: string }) {
         const fit = computeBaseFitScaleFromObject(model, marker);
         const displayedScale = computeSceneDisplayScale(activeScene, fit.baseFitScale);
         applySceneTransform(model, activeScene, displayedScale);
-        markerRoot.add(model);
+        boardRoot.add(model);
         setStatus("model", "loaded");
-        setMessage("Camera active. Point at the selected marker.");
+        setMessage("Camera active. Point at the AR tracking marker.");
       } catch (caught) {
         const errorMessage = caught instanceof Error ? caught.message : "Model loading error.";
         setStatus("model", errorMessage);
@@ -419,9 +428,19 @@ export function ARClient({ id }: { id: string }) {
                 modelUrl: project ? getActiveSceneForClient(project)?.modelUrl : "",
                 modelPath: project ? getActiveSceneForClient(project)?.modelPathname : "",
                 markerStyle: project?.marker.styleId,
-                markerSizeMm: project ? `${project.marker.widthMm} x ${project.marker.heightMm}` : "",
-                markerImage: project?.marker.imageUrl,
-                markerPattern: project?.marker.patternUrl,
+                boardStyle: project?.marker.boardStyle,
+                boardSizeMm: project ? `${project.marker.widthMm} x ${project.marker.heightMm}` : "",
+                boardImage: project ? getMarkerBoardImageUrl(project.marker) : "",
+                trackingMarkerId: project?.marker.trackingMarkerId,
+                trackingMarkerType: project?.marker.trackingMarkerType,
+                trackingMarkerSizeMm: project?.marker.trackingMarkerSizeOnBoardMm,
+                trackingMarkerImage: project?.marker.trackingMarkerImageUrl,
+                trackingMarkerPattern: project ? getTrackingMarkerPatternUrl(project.marker) : "",
+                trackingMarkerPositionOnBoard: project?.marker.trackingMarkerPositionOnBoard,
+                patternUrlLoaded: Boolean(project?.marker.trackingMarkerPatternUrl || project?.marker.patternUrl),
+                cameraActive: runtimeStatus.camera === "active",
+                activeSceneLoaded: Boolean(project ? getActiveSceneForClient(project) : null),
+                modelLoaded: runtimeStatus.model === "loaded",
                 webgl: runtimeStatus.webgl,
                 placement: project ? getActiveSceneForClient(project)?.placement : null,
                 userAgent: navigator.userAgent

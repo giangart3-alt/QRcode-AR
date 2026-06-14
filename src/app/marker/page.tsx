@@ -1,13 +1,16 @@
 import Link from "next/link";
-import Image from "next/image";
 import { PrintButton } from "./PrintButton";
 import {
   DEFAULT_MARKER_HEIGHT_MM,
   DEFAULT_MARKER_WIDTH_MM,
-  MARKER_IMAGE_URL
+  createDefaultMarker,
+  getMarkerBoardImageUrl
 } from "@/lib/placement";
 
 export default function MarkerPage() {
+  const marker = createDefaultMarker();
+  const boardImageUrl = getMarkerBoardImageUrl(marker);
+
   return (
     <main className="min-h-screen bg-[var(--panel)] px-5 py-6 text-[var(--ink)]">
       <div className="no-print mx-auto mb-8 flex max-w-6xl items-center justify-between border-b border-[var(--line)] pb-5">
@@ -19,12 +22,10 @@ export default function MarkerPage() {
 
       <section className="mx-auto grid max-w-6xl gap-8 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-center">
         <div className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-3 shadow-sm print:border-0 print:p-0 print:shadow-none">
-          <Image
-            src={MARKER_IMAGE_URL}
-            alt="Official QRcode AR calibration playground marker"
-            width={1499}
-            height={1049}
-            priority
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={boardImageUrl}
+            alt="Official QRcode AR printable playground board"
             className="h-auto w-full rounded-lg border border-[var(--line)] print:rounded-none"
           />
         </div>
@@ -34,8 +35,8 @@ export default function MarkerPage() {
           <h1 className="mt-3 text-4xl font-black">Calibration playground</h1>
           <div className="mt-5 space-y-4 text-base leading-7 text-[var(--muted)]">
             <p>
-              Print or display this exact image. It is the same reference used by the
-              placement editor and phone AR page.
+              Print or display this board. The board is the visual playground; the
+              centered square is the AR tracking marker used by the phone AR page.
             </p>
             <p>
               Default physical size: <strong>{DEFAULT_MARKER_WIDTH_MM}mm x {DEFAULT_MARKER_HEIGHT_MM}mm</strong>.
@@ -45,6 +46,10 @@ export default function MarkerPage() {
             <p>
               Keep the full outer black frame visible, flat, well lit, and free of glare.
               A full-screen monitor or TV works for quick placement tests.
+            </p>
+            <p>
+              Tracking target: <strong>{marker.trackingMarkerId}</strong>,{" "}
+              <strong>{marker.trackingMarkerSizeOnBoardMm}mm</strong> square.
             </p>
           </div>
         </aside>
