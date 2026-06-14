@@ -79,8 +79,7 @@ export function ViewerClient({ id }: { id: string }) {
                 <div>
                   <h2 className="text-2xl font-black">No GLB on the active scene yet</h2>
                   <p className="mt-3 max-w-md text-sm leading-6">
-                    Add a real model scene from the upload flow, or keep this placeholder
-                    while building the project structure.
+                    Add a real model scene from the project workspace.
                   </p>
                 </div>
               </div>

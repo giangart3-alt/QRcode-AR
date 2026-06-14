@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import QRCode from "qrcode";
 import { FormEvent, useEffect, useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
 import type { ProjectMetadata, ProjectSummary } from "@/lib/projects";
@@ -15,6 +16,8 @@ export function DashboardClient() {
   const [newProjectName, setNewProjectName] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [importJson, setImportJson] = useState("");
+  const [qrProjectId, setQrProjectId] = useState("");
+  const [qrDataUrl, setQrDataUrl] = useState("");
   const [status, setStatus] = useState("Enter the admin password to load projects.");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -42,6 +45,7 @@ export function DashboardClient() {
       } catch (caught) {
         if (cancelled) return;
         window.sessionStorage.removeItem("adminPassword");
+        setPassword("");
         setStatus("Enter the admin password to load projects.");
         setError(caught instanceof Error ? caught.message : "Unable to load projects.");
       } finally {
@@ -152,6 +156,24 @@ export function DashboardClient() {
     }
   }
 
+  async function showQr(project: ProjectSummary) {
+    if (qrProjectId === project.id) {
+      setQrProjectId("");
+      setQrDataUrl("");
+      return;
+    }
+
+    setError("");
+    setQrProjectId(project.id);
+    setQrDataUrl("");
+
+    try {
+      setQrDataUrl(await QRCode.toDataURL(project.arUrl, { margin: 1, width: 240 }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to generate QR code.");
+    }
+  }
+
   return (
     <main className="min-h-screen px-5 py-6 text-[var(--foreground)]">
       <div className="mx-auto max-w-7xl">
@@ -160,16 +182,13 @@ export function DashboardClient() {
             QRcode AR
           </Link>
           <div className="flex flex-wrap gap-2">
-            <Link className="button-secondary" href="/marker">
-              Marker
-            </Link>
             <button
               type="button"
               className="focus-ring rounded-lg bg-[var(--ink)] px-4 py-3 text-sm font-semibold text-white hover:bg-black disabled:opacity-60"
               disabled={!hasPassword || busy}
               onClick={() => setShowCreate((value) => !value)}
             >
-              Create new project
+              New project
             </button>
           </div>
         </nav>
@@ -178,8 +197,8 @@ export function DashboardClient() {
           <div>
             <h1 className="text-4xl font-black tracking-tight text-[var(--ink)]">Project dashboard</h1>
             <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--muted)]">
-              Manage persistent AR projects stored in Vercel Blob. Open a project to upload
-              scenes, tune placement, and copy project-level AR links.
+              Saved projects from Vercel Blob. Open a project to upload scenes, tune placement,
+              and share the stable AR QR link.
             </p>
           </div>
           <button
@@ -192,25 +211,27 @@ export function DashboardClient() {
           </button>
         </header>
 
-        <form onSubmit={unlock} className="mt-6 grid gap-3 rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm md:grid-cols-[1fr_auto]">
-          <label className="text-sm font-semibold text-[var(--ink)]">
-            Admin password
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
-              autoComplete="current-password"
-            />
-          </label>
-          <button
-            type="submit"
-            className="focus-ring self-end rounded-lg bg-[var(--ink)] px-4 py-3 font-semibold text-white hover:bg-black disabled:opacity-60"
-            disabled={busy || !password}
-          >
-            {busy ? "Working..." : "Load projects"}
-          </button>
-        </form>
+        {!hasPassword ? (
+          <form onSubmit={unlock} className="mt-6 grid gap-3 rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm md:grid-cols-[1fr_auto]">
+            <label className="text-sm font-semibold text-[var(--ink)]">
+              Admin password
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
+                autoComplete="current-password"
+              />
+            </label>
+            <button
+              type="submit"
+              className="focus-ring self-end rounded-lg bg-[var(--ink)] px-4 py-3 font-semibold text-white hover:bg-black disabled:opacity-60"
+              disabled={busy || !password}
+            >
+              {busy ? "Working..." : "Load projects"}
+            </button>
+          </form>
+        ) : null}
 
         {showCreate ? (
           <form onSubmit={createProject} className="mt-6 grid gap-3 rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm md:grid-cols-[1fr_auto]">
@@ -233,7 +254,7 @@ export function DashboardClient() {
           </form>
         ) : null}
 
-        <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="mt-6 grid gap-6">
           <section>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-xl font-black text-[var(--ink)]">Projects</h2>
@@ -242,10 +263,21 @@ export function DashboardClient() {
 
             <div className="grid gap-4 md:grid-cols-2">
               {projects.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-[var(--line)] bg-white p-6 text-sm leading-6 text-[var(--muted)] md:col-span-2">
-                  {hasPassword
-                    ? "No projects found in Vercel Blob yet. Create a project to start building scenes."
-                    : "Enter the admin password to load projects from Vercel Blob."}
+                <div className="rounded-xl border border-dashed border-[var(--line)] bg-white p-6 md:col-span-2">
+                  <p className="text-sm leading-6 text-[var(--muted)]">
+                    {hasPassword
+                      ? "No projects found in Vercel Blob yet."
+                      : "Enter the admin password to load projects from Vercel Blob."}
+                  </p>
+                  {hasPassword ? (
+                    <button
+                      type="button"
+                      className="focus-ring mt-4 rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white hover:bg-[var(--accent-dark)]"
+                      onClick={() => setShowCreate(true)}
+                    >
+                      New project
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -262,31 +294,45 @@ export function DashboardClient() {
                       className="focus-ring rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white hover:bg-[var(--accent-dark)]"
                       href={`/admin/project/${project.id}`}
                     >
-                      Open project
+                      Open
                     </Link>
-                  </div>
-
-                  <div className="mt-5 grid gap-3 text-sm">
-                    <LinkRow label="AR link" value={project.arUrl} />
-                    <LinkRow label="Viewer link" value={project.viewUrl} />
                   </div>
 
                   <div className="mt-5 flex flex-wrap gap-2">
-                    <a className="button-secondary" href={`/api/projects/${project.id}/export`}>
-                      Export JSON
-                    </a>
+                    <button type="button" className="button-secondary" onClick={() => showQr(project)}>
+                      QR
+                    </button>
+                    <CopyButton value={project.arUrl} label="Copy link" />
                     <Link className="button-secondary" href={project.markerUrl}>
                       Marker
                     </Link>
+                    <a className="button-secondary" href={`/api/projects/${project.id}/export`}>
+                      Export JSON
+                    </a>
                   </div>
+
+                  {qrProjectId === project.id ? (
+                    <div className="mt-5 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-4">
+                      {qrDataUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={qrDataUrl} alt={`QR code for ${project.name}`} className="mx-auto w-44 rounded-md border border-[var(--line)] bg-white p-2" />
+                      ) : (
+                        <p className="text-sm font-semibold text-[var(--muted)]">Generating QR...</p>
+                      )}
+                      <p className="mt-3 break-all text-xs font-semibold text-[var(--muted)]">{project.arUrl}</p>
+                    </div>
+                  ) : null}
                 </article>
               ))}
             </div>
           </section>
 
-          <aside className="space-y-6">
-            <form onSubmit={importProject} className="rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm">
-              <h2 className="text-xl font-black text-[var(--ink)]">Import JSON</h2>
+          <details className="rounded-xl border border-[var(--line)] bg-white p-4 shadow-sm">
+            <summary className="cursor-pointer text-sm font-black text-[var(--ink)]">
+              Backup / Advanced
+            </summary>
+            <form onSubmit={importProject} className="mt-4">
+              <h2 className="text-lg font-black text-[var(--ink)]">Import JSON</h2>
               <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
                 Manual backup import. Existing Blob files are never deleted automatically.
               </p>
@@ -299,15 +345,12 @@ export function DashboardClient() {
               <button
                 type="submit"
                 disabled={busy || !password || !importJson.trim()}
-                className="focus-ring mt-3 w-full rounded-lg bg-[var(--ink)] px-4 py-3 font-semibold text-white hover:bg-black disabled:opacity-60"
+                className="focus-ring mt-3 rounded-lg bg-[var(--ink)] px-4 py-3 font-semibold text-white hover:bg-black disabled:opacity-60"
               >
                 Import project
               </button>
             </form>
-            <Link className="button-secondary w-full text-center" href="/admin/legacy-upload">
-              Legacy single-upload debug page
-            </Link>
-          </aside>
+          </details>
         </div>
 
         {error ? (
@@ -335,18 +378,6 @@ async function fetchProjects(password: string) {
   }
 
   return result.projects || [];
-}
-
-function LinkRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">{label}</p>
-      <div className="mt-1 flex items-start gap-2">
-        <p className="min-w-0 flex-1 break-all">{value}</p>
-        <CopyButton value={value} />
-      </div>
-    </div>
-  );
 }
 
 function formatDate(value: string) {

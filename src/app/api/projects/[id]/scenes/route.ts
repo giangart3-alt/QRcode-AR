@@ -30,6 +30,13 @@ export async function POST(
       return NextResponse.json({ error: auth.error }, { status: auth.status });
     }
 
+    if (!body.modelUrl || !body.modelPathname) {
+      return NextResponse.json(
+        { error: "A GLB modelUrl and modelPathname are required to add a scene." },
+        { status: 400 }
+      );
+    }
+
     if (body.modelPathname && !body.modelPathname.toLowerCase().endsWith(".glb")) {
       return NextResponse.json({ error: "Only .glb files are allowed." }, { status: 400 });
     }

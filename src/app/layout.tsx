@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "QRcode AR",
-  description: "Upload GLB files, generate QR codes, and open models in mobile AR."
+  description: "Persistent GLB project workspace with QR codes, printable markers, and AR viewer links."
 };
 
 export default function RootLayout({

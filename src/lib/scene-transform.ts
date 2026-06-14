@@ -32,7 +32,7 @@ export function computeBaseFitScaleFromObject(
 
 export function computeSceneDisplayScale(scene: SceneMetadata, baseFitScale: number) {
   if (scene.scaleMode === "architectural") {
-    return (1 / positiveNumber(scene.architecturalScale, 100)) * positiveNumber(scene.normalizedScale, 1);
+    return 1 / positiveNumber(scene.architecturalScale, 100);
   }
 
   return positiveNumber(baseFitScale, 1) * positiveNumber(scene.normalizedScale, 1);
@@ -65,7 +65,7 @@ export function sceneTransformFromObject(
     (Math.abs(model.scale.x) + Math.abs(model.scale.y) + Math.abs(model.scale.z)) / 3;
   const normalizedScale =
     scene.scaleMode === "architectural"
-      ? displayedScale * positiveNumber(scene.architecturalScale, 100)
+      ? 1
       : displayedScale / positiveNumber(baseFitScale, 1);
 
   return {

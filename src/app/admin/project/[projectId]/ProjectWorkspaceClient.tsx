@@ -2,6 +2,7 @@
 
 import { upload } from "@vercel/blob/client";
 import Link from "next/link";
+import QRCode from "qrcode";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
 import { SceneThreeViewport, type TransformMode } from "@/components/SceneThreeViewport";
@@ -36,6 +37,8 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
   const [replaceFile, setReplaceFile] = useState<File | null>(null);
   const [transformMode, setTransformMode] = useState<TransformMode>("translate");
   const [metrics, setMetrics] = useState<SceneScaleMetrics | null>(null);
+  const [qrOpen, setQrOpen] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState("");
   const [status, setStatus] = useState("Loading project...");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -272,6 +275,50 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     }
   }
 
+  async function toggleQr() {
+    if (!project) return;
+
+    if (qrOpen) {
+      setQrOpen(false);
+      return;
+    }
+
+    setQrOpen(true);
+    setQrDataUrl("");
+    setError("");
+
+    try {
+      setQrDataUrl(await QRCode.toDataURL(project.arUrl, { margin: 1, width: 240 }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to generate QR code.");
+    }
+  }
+
+  async function removeScene(sceneId: string) {
+    if (!project) return;
+
+    const scene = project.scenes.find((item) => item.id === sceneId);
+    if (!scene) return;
+
+    const confirmed = window.confirm(
+      `Remove "${scene.name}" from this project JSON? The GLB file in Vercel Blob will not be deleted.`
+    );
+    if (!confirmed) return;
+
+    const scenes = project.scenes.filter((item) => item.id !== sceneId);
+    const activeSceneId =
+      project.activeSceneId === sceneId ? scenes[0]?.id || "" : project.activeSceneId;
+    const updatedProject = {
+      ...project,
+      scenes,
+      activeSceneId
+    };
+
+    setProject(updatedProject);
+    setSelectedSceneId(activeSceneId || scenes[0]?.id || "");
+    await saveProject(updatedProject, "Scene removed. GLB file remains in Blob.");
+  }
+
   function updateProjectName(name: string) {
     setProject((current) => (current ? { ...current, name } : current));
   }
@@ -354,7 +401,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
       <header className="flex h-16 items-center justify-between gap-3 border-b border-[var(--line)] bg-white px-4">
         <div className="flex min-w-0 items-center gap-3">
           <Link className="button-secondary shrink-0" href="/admin/dashboard">
-            Dashboard
+            Back to dashboard
           </Link>
           <div className="min-w-0">
             <h1 className="truncate text-lg font-black text-[var(--ink)]">
@@ -365,20 +412,31 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
         </div>
 
         {project ? (
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <div className="relative flex shrink-0 flex-wrap items-center justify-end gap-2">
             <Link className="button-secondary" href={project.markerUrl}>
               Print / Export Marker
             </Link>
+            <button type="button" className="button-secondary" onClick={toggleQr}>
+              QR
+            </button>
             <CopyButton value={project.arUrl} label="Copy AR link" />
             <CopyButton value={project.viewUrl} label="Copy Viewer link" />
-            <a className="button-secondary" href={`/api/projects/${project.id}/export`}>
-              Export JSON
-            </a>
+            {qrOpen ? (
+              <div className="absolute right-0 top-14 z-20 w-72 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-xl">
+                {qrDataUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={qrDataUrl} alt={`QR code for ${project.name}`} className="mx-auto w-44 rounded-md border border-[var(--line)] bg-white p-2" />
+                ) : (
+                  <p className="text-sm font-semibold text-[var(--muted)]">Generating QR...</p>
+                )}
+                <p className="mt-3 break-all text-xs font-semibold text-[var(--muted)]">{project.arUrl}</p>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </header>
 
-      <div className="grid h-[calc(100vh-4rem)] grid-cols-[300px_minmax(0,1fr)_360px]">
+      <div className={selectedScene ? "grid h-[calc(100vh-4rem)] grid-cols-[300px_minmax(0,1fr)_360px]" : "grid h-[calc(100vh-4rem)] grid-cols-[300px_minmax(0,1fr)]"}>
         <aside className="overflow-y-auto border-r border-[var(--line)] bg-white p-4">
           <label className="block text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">
             Project name
@@ -408,21 +466,43 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
             <div className="space-y-2">
               {project?.scenes.map((scene) => (
-                <button
+                <div
                   key={scene.id}
-                  type="button"
                   className={
                     scene.id === selectedScene?.id
-                      ? "focus-ring w-full rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-3 text-left"
-                      : "focus-ring w-full rounded-lg border border-[var(--line)] bg-white p-3 text-left hover:bg-[var(--soft)]"
+                      ? "rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-3"
+                      : "rounded-lg border border-[var(--line)] bg-white p-3"
                   }
-                  onClick={() => setSelectedSceneId(scene.id)}
                 >
-                  <span className="block truncate text-sm font-black text-[var(--ink)]">{scene.name}</span>
-                  <span className="mt-1 block truncate text-xs text-[var(--muted)]">
-                    {scene.id === project.activeSceneId ? "Active scene" : scene.modelPathname || "No GLB"}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    className="focus-ring w-full rounded-md text-left"
+                    onClick={() => setSelectedSceneId(scene.id)}
+                  >
+                    <span className="block truncate text-sm font-black text-[var(--ink)]">{scene.name}</span>
+                    <span className="mt-1 block truncate text-xs text-[var(--muted)]">
+                      {scene.id === project.activeSceneId ? "Active scene" : scene.modelPathname || "No GLB"}
+                    </span>
+                  </button>
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      className={scene.id === project.activeSceneId ? "focus-ring flex-1 rounded-lg bg-[var(--ink)] px-3 py-2 text-xs font-semibold text-white" : "button-secondary flex-1 px-3 py-2 text-xs"}
+                      disabled={working || scene.id === project.activeSceneId}
+                      onClick={() => setActiveScene(scene.id)}
+                    >
+                      {scene.id === project.activeSceneId ? "Active" : "Set active"}
+                    </button>
+                    <button
+                      type="button"
+                      className="button-secondary px-3 py-2 text-xs"
+                      disabled={working}
+                      onClick={() => removeScene(scene.id)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
               ))}
 
               {project && project.scenes.length === 0 ? (
@@ -449,7 +529,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
             />
             <button
               type="submit"
-              disabled={working || !newSceneFile}
+              disabled={working || !password || !newSceneFile}
               className="focus-ring mt-3 w-full rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white hover:bg-[var(--accent-dark)] disabled:opacity-60"
             >
               {uploadStage === "uploading" ? `Uploading ${uploadProgress}%` : "Upload and add scene"}
@@ -469,7 +549,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
         <section className="flex min-w-0 flex-col">
           <div className="flex h-14 items-center justify-between border-b border-[var(--line)] bg-white px-4">
             <div className="flex rounded-lg border border-[var(--line)] bg-[var(--soft)] p-1">
-              {(["translate", "rotate", "scale"] as TransformMode[]).map((mode) => (
+              {(["translate", "rotate"] as TransformMode[]).map((mode) => (
                 <button
                   key={mode}
                   type="button"
@@ -490,6 +570,11 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
               </p>
             ) : null}
           </div>
+          {error && !selectedScene ? (
+            <p className="border-b border-[var(--line)] bg-[var(--soft)] px-4 py-3 text-sm font-semibold text-[var(--ink)]">
+              {error}
+            </p>
+          ) : null}
           <SceneThreeViewport
             key={`${selectedScene?.id || "empty"}-${selectedScene?.modelUrl || "none"}`}
             scene={selectedScene}
@@ -503,8 +588,8 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
           />
         </section>
 
-        <aside className="overflow-y-auto border-l border-[var(--line)] bg-white p-4">
-          {selectedScene && project ? (
+        {selectedScene && project ? (
+          <aside className="overflow-y-auto border-l border-[var(--line)] bg-white p-4">
             <SceneInspector
               busy={working}
               project={project}
@@ -527,18 +612,14 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
               onFit={() => updateScene(selectedScene.id, fitModelToMarker)}
               onRotate={(axis) => rotateScene(selectedScene.id, axis)}
             />
-          ) : (
-            <div className="rounded-xl border border-dashed border-[var(--line)] bg-[var(--soft)] p-5 text-sm leading-6 text-[var(--muted)]">
-              Select or add a scene to edit placement, scale, and model settings.
-            </div>
-          )}
 
-          {error ? (
-            <p className="mt-4 rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-3 text-sm font-semibold text-[var(--ink)]">
-              {error}
-            </p>
-          ) : null}
-        </aside>
+            {error ? (
+              <p className="mt-4 rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-3 text-sm font-semibold text-[var(--ink)]">
+                {error}
+              </p>
+            ) : null}
+          </aside>
+        ) : null}
       </div>
     </main>
   );
@@ -685,36 +766,41 @@ function SceneInspector({
             <option value="architectural">Architectural scale</option>
           </select>
         </label>
-        <NumberField
-          label={scene.scaleMode === "fit" ? "Normalized scale" : "Final multiplier"}
-          value={scene.normalizedScale}
-          onChange={onNormalizedScaleChange}
-        />
-        <label className="mt-3 block text-sm font-semibold text-[var(--ink)]">
-          Architectural preset
-          <select
-            value={SCALE_PRESETS.includes(scene.architecturalScale) ? String(scene.architecturalScale) : "custom"}
-            onChange={(event) => {
-              if (event.target.value !== "custom") onArchitecturalScaleChange(event.target.value);
-            }}
-            className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
-          >
-            {SCALE_PRESETS.map((scale) => (
-              <option key={scale} value={scale}>
-                1:{scale}
-              </option>
-            ))}
-            <option value="custom">Custom</option>
-          </select>
-        </label>
-        <NumberField
-          label="Custom architectural scale"
-          value={scene.architecturalScale}
-          onChange={onArchitecturalScaleChange}
-        />
+        {scene.scaleMode === "fit" ? (
+          <NumberField
+            label="Normalized fit scale"
+            value={scene.normalizedScale}
+            onChange={onNormalizedScaleChange}
+          />
+        ) : (
+          <>
+            <label className="mt-3 block text-sm font-semibold text-[var(--ink)]">
+              Architectural preset
+              <select
+                value={SCALE_PRESETS.includes(scene.architecturalScale) ? String(scene.architecturalScale) : "custom"}
+                onChange={(event) => {
+                  if (event.target.value !== "custom") onArchitecturalScaleChange(event.target.value);
+                }}
+                className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
+              >
+                {SCALE_PRESETS.map((scale) => (
+                  <option key={scale} value={scale}>
+                    1:{scale}
+                  </option>
+                ))}
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <NumberField
+              label="Custom architectural scale"
+              value={scene.architecturalScale}
+              onChange={onArchitecturalScaleChange}
+            />
+          </>
+        )}
         <p className="mt-3 text-xs leading-5 text-[var(--muted)]">
-          Fit mode computes a base scale from the GLB X/Z footprint and marker size.
-          Architectural mode displays real-world meters at the selected drawing scale.
+          Fit mode computes scale from the GLB X/Z footprint and marker size. Architectural
+          mode treats GLB units as meters and displays them at the selected drawing scale.
         </p>
       </section>
 

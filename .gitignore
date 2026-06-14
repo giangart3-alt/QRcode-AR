@@ -13,6 +13,9 @@ dist
 *.obj
 *.zip
 *.tsbuildinfo
+edge-profile
+edge-profile-mobile
+Crashpad
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

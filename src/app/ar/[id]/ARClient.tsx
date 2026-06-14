@@ -3,11 +3,9 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import {
-  degreesToRadians,
-  mmToMeters
-} from "@/lib/placement";
-import type { ProjectMetadata } from "@/lib/projects";
+import { mmToMeters } from "@/lib/placement";
+import { applySceneTransform, computeBaseFitScaleFromObject, computeSceneDisplayScale } from "@/lib/scene-transform";
+import type { ProjectMetadata, SceneMetadata } from "@/lib/projects";
 import { loadGltfModel } from "@/lib/three-gltf";
 
 declare global {
@@ -107,7 +105,7 @@ export function ARClient({ id }: { id: string }) {
 
     cleanupRef.current?.();
     const currentProject = project;
-    const placement = currentProject.placement;
+    const activeScene = getActiveSceneForClient(currentProject);
     const marker = currentProject.marker;
     let stopped = false;
     let animationFrame = 0;
@@ -242,11 +240,15 @@ export function ARClient({ id }: { id: string }) {
       setMessage("Loading model...");
 
       try {
-        if (!currentProject.modelUrl) {
+        if (!activeScene) {
+          throw new Error("No active scene has been created yet.");
+        }
+
+        if (!activeScene.modelUrl) {
           throw new Error("Active scene does not have a GLB model yet.");
         }
 
-        const gltf = await loadGltfModel(currentProject.modelUrl);
+        const gltf = await loadGltfModel(activeScene.modelUrl);
         if (stopped) return;
 
         const model = gltf.scene;
@@ -255,17 +257,9 @@ export function ARClient({ id }: { id: string }) {
             child.frustumCulled = false;
           }
         });
-        model.position.set(
-          mmToMeters(placement.position.x),
-          mmToMeters(placement.position.y),
-          mmToMeters(placement.position.z)
-        );
-        model.rotation.set(
-          degreesToRadians(placement.rotation.x),
-          degreesToRadians(placement.rotation.y),
-          degreesToRadians(placement.rotation.z)
-        );
-        model.scale.setScalar(placement.scale);
+        const fit = computeBaseFitScaleFromObject(model, marker);
+        const displayedScale = computeSceneDisplayScale(activeScene, fit.baseFitScale);
+        applySceneTransform(model, activeScene, displayedScale);
         markerRoot.add(model);
         setStatus("model", "loaded");
         setMessage("Point the camera at the official playground marker.");
@@ -379,10 +373,11 @@ export function ARClient({ id }: { id: string }) {
               {
                 status: runtimeStatus,
                 project: project?.id,
-                modelUrl: project?.modelUrl,
+                activeScene: project ? getActiveSceneForClient(project)?.id : "",
+                modelUrl: project ? getActiveSceneForClient(project)?.modelUrl : "",
                 markerImage: project?.marker.imageUrl,
                 markerPattern: project?.marker.patternUrl,
-                placement: project?.placement,
+                placement: project ? getActiveSceneForClient(project)?.placement : null,
                 userAgent: navigator.userAgent
               },
               null,
@@ -392,6 +387,14 @@ export function ARClient({ id }: { id: string }) {
         ) : null}
       </div>
     </main>
+  );
+}
+
+function getActiveSceneForClient(project: ProjectMetadata): SceneMetadata | null {
+  return (
+    project.scenes.find((scene) => scene.id === project.activeSceneId) ||
+    project.scenes[0] ||
+    null
   );
 }
 

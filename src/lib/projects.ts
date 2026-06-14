@@ -343,7 +343,7 @@ export function computeDisplayedScale(scene: Pick<
   "scaleMode" | "architecturalScale" | "normalizedScale"
 >) {
   if (scene.scaleMode === "architectural") {
-    return positiveNumber(scene.normalizedScale, 1) / positiveNumber(scene.architecturalScale, 100);
+    return 1 / positiveNumber(scene.architecturalScale, 100);
   }
 
   return positiveNumber(scene.normalizedScale, 1);

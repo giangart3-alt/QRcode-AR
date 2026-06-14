@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { CopyButton } from "@/components/CopyButton";
 import { SceneThreeViewport } from "@/components/SceneThreeViewport";
 import type { ProjectMetadata } from "@/lib/projects";
 import type { SceneScaleMetrics } from "@/lib/scene-transform";
@@ -77,6 +78,7 @@ export function ProjectViewerClient({ projectId }: { projectId: string }) {
             <Link className="focus-ring rounded-lg border border-white/20 bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15" href={project.markerUrl}>
               Open marker
             </Link>
+            <CopyButton value={project.viewUrl} label="Copy link" />
           </div>
         ) : null}
       </header>
@@ -104,8 +106,11 @@ export function ProjectViewerClient({ projectId }: { projectId: string }) {
               <div className="mt-5 grid gap-3 text-sm">
                 <Info label="Marker" value={`${project.marker.widthMm} x ${project.marker.heightMm} mm`} />
                 <Info label="Scale mode" value={activeScene?.scaleMode || "None"} />
-                <Info label="Architectural scale" value={activeScene ? `1:${activeScene.architecturalScale}` : "None"} />
-                <Info label="Normalized scale" value={activeScene ? String(activeScene.normalizedScale) : "None"} />
+                {activeScene?.scaleMode === "architectural" ? (
+                  <Info label="Architectural scale" value={`1:${activeScene.architecturalScale}`} />
+                ) : (
+                  <Info label="Normalized fit scale" value={activeScene ? String(activeScene.normalizedScale) : "None"} />
+                )}
                 {metrics ? (
                   <>
                     <Info label="Model footprint" value={`${formatNumber(metrics.modelWidthM)}m x ${formatNumber(metrics.modelDepthM)}m`} />

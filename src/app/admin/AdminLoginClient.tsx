@@ -78,9 +78,7 @@ export function AdminLoginClient() {
           <Link className="focus-ring rounded-lg px-3 py-2 text-sm font-semibold text-[var(--muted)] hover:bg-white hover:text-[var(--ink)]" href="/">
             Home
           </Link>
-          <Link className="button-secondary" href="/marker">
-            Marker
-          </Link>
+          <strong className="text-sm font-black text-[var(--ink)]">QRcode AR</strong>
         </nav>
 
         <div className="grid flex-1 place-items-center py-10">
