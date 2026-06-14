@@ -9,30 +9,30 @@ import {
 
 export default function MarkerPage() {
   return (
-    <main className="min-h-screen bg-white px-5 py-6 text-black">
-      <div className="no-print mx-auto mb-8 flex max-w-6xl items-center justify-between border-b border-neutral-200 pb-5">
-        <Link className="focus-ring rounded-lg px-3 py-2 text-sm font-semibold hover:bg-neutral-100" href="/">
+    <main className="min-h-screen bg-[var(--panel)] px-5 py-6 text-[var(--ink)]">
+      <div className="no-print mx-auto mb-8 flex max-w-6xl items-center justify-between border-b border-[var(--line)] pb-5">
+        <Link className="focus-ring rounded-lg px-3 py-2 text-sm font-semibold hover:bg-[var(--soft)]" href="/">
           Home
         </Link>
         <PrintButton />
       </div>
 
       <section className="mx-auto grid max-w-6xl gap-8 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-center">
-        <div className="rounded-xl border border-neutral-200 bg-white p-3 shadow-sm print:border-0 print:p-0 print:shadow-none">
+        <div className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-3 shadow-sm print:border-0 print:p-0 print:shadow-none">
           <Image
             src={MARKER_IMAGE_URL}
             alt="Official QRcode AR calibration playground marker"
             width={1499}
             height={1049}
             priority
-            className="h-auto w-full rounded-lg border border-neutral-300 print:rounded-none"
+            className="h-auto w-full rounded-lg border border-[var(--line)] print:rounded-none"
           />
         </div>
 
-        <aside className="no-print rounded-xl border border-neutral-200 bg-neutral-50 p-5">
-          <p className="text-sm font-bold uppercase tracking-[0.2em] text-neutral-500">Official marker</p>
+        <aside className="no-print rounded-xl border border-[var(--line)] bg-[var(--background)] p-5">
+          <p className="text-sm font-bold uppercase tracking-[0.2em] text-[var(--muted)]">Official marker</p>
           <h1 className="mt-3 text-4xl font-black">Calibration playground</h1>
-          <div className="mt-5 space-y-4 text-base leading-7 text-neutral-700">
+          <div className="mt-5 space-y-4 text-base leading-7 text-[var(--muted)]">
             <p>
               Print or display this exact image. It is the same reference used by the
               placement editor and phone AR page.

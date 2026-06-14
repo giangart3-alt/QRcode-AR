@@ -91,7 +91,7 @@ export function SceneThreeViewport({
     host.appendChild(renderer.domElement);
 
     const threeScene = new THREE.Scene();
-    threeScene.background = new THREE.Color(0xf3f6f5);
+    threeScene.background = new THREE.Color(0xfff7ed);
 
     const camera = new THREE.PerspectiveCamera(48, 1, 0.01, 1000);
     camera.position.set(0.35, Math.max(maxMarkerMeters * 0.75, 0.75), Math.max(maxMarkerMeters * 0.95, 0.95));
@@ -102,7 +102,7 @@ export function SceneThreeViewport({
     orbit.target.set(0, 0, 0);
 
     threeScene.add(new THREE.AmbientLight(0xffffff, 1.5));
-    threeScene.add(new THREE.HemisphereLight(0xffffff, 0x60706c, 2.2));
+    threeScene.add(new THREE.HemisphereLight(0xffffff, 0xf97316, 2.2));
     const directional = new THREE.DirectionalLight(0xffffff, 2.4);
     directional.position.set(2, 4, 3);
     threeScene.add(directional);
@@ -124,13 +124,13 @@ export function SceneThreeViewport({
 
     const border = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.PlaneGeometry(1, 1)),
-      new THREE.LineBasicMaterial({ color: 0x101615 })
+      new THREE.LineBasicMaterial({ color: 0x1c1917 })
     );
     border.scale.set(markerWidthM, markerHeightM, 1);
     border.rotation.x = -Math.PI / 2;
     threeScene.add(border);
 
-    const grid = new THREE.GridHelper(maxMarkerMeters, 10, 0x0f766e, 0x9aa8a4);
+    const grid = new THREE.GridHelper(maxMarkerMeters, 10, 0xf97316, 0xfed7aa);
     grid.position.y = 0.002;
     threeScene.add(grid);
 
@@ -268,7 +268,7 @@ export function SceneThreeViewport({
 function ViewportMessage({ title, body }: { title: string; body: string }) {
   return (
     <div className="pointer-events-none absolute inset-0 grid place-items-center p-6">
-      <div className="max-w-sm rounded-xl border border-[var(--line)] bg-white/90 p-5 text-center shadow-sm backdrop-blur">
+      <div className="max-w-sm rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 text-center shadow-sm backdrop-blur">
         <h2 className="text-xl font-black text-[var(--ink)]">{title}</h2>
         <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{body}</p>
       </div>

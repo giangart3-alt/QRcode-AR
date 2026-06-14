@@ -39,7 +39,7 @@ export function ViewerClient({ id }: { id: string }) {
   }, [id]);
 
   return (
-    <main className="min-h-screen bg-[#10100d] text-white">
+    <main className="min-h-screen bg-[var(--ink)] text-[var(--panel)]">
       <Script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.0.0/model-viewer.min.js" />
       <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-5 py-5">
         <nav className="no-print flex items-center justify-between">
@@ -54,7 +54,7 @@ export function ViewerClient({ id }: { id: string }) {
         </nav>
 
         {error ? (
-          <section className="my-auto rounded-md border border-red-400/40 bg-red-950/40 p-5 text-red-100">
+          <section className="my-auto rounded-md border border-[var(--accent)] bg-[var(--soft)] p-5 text-[var(--ink)]">
             {error}
           </section>
         ) : null}
@@ -72,10 +72,10 @@ export function ViewerClient({ id }: { id: string }) {
                 exposure="1"
                 draco-decoder-location="https://www.gstatic.com/draco/v1/decoders/"
                 alt={project.name}
-                style={{ width: "100%", minHeight: "72vh", background: "#e9e3d5", borderRadius: 8 }}
+                style={{ width: "100%", minHeight: "72vh", background: "var(--background)", borderRadius: 8 }}
               />
             ) : (
-              <div className="grid min-h-[72vh] place-items-center rounded-lg bg-[#e9e3d5] p-6 text-center text-black">
+              <div className="grid min-h-[72vh] place-items-center rounded-lg bg-[var(--background)] p-6 text-center text-[var(--ink)]">
                 <div>
                   <h2 className="text-2xl font-black">No GLB on the active scene yet</h2>
                   <p className="mt-3 max-w-md text-sm leading-6">
@@ -86,7 +86,7 @@ export function ViewerClient({ id }: { id: string }) {
               </div>
             )}
             <aside className="self-start rounded-md border border-white/10 bg-white/8 p-5">
-              <p className="text-sm font-semibold uppercase tracking-[0.16em] text-teal-200">Fallback viewer</p>
+              <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--soft)]">Fallback viewer</p>
               <h1 className="mt-3 text-3xl font-black">{project.name}</h1>
               <p className="mt-4 text-sm leading-6 text-white/70">
                 Use orbit controls to inspect the model. If your phone supports WebXR,
@@ -106,7 +106,7 @@ export function ViewerClient({ id }: { id: string }) {
               </dl>
               <div className="mt-5 grid gap-2">
                 <Link
-                  className="focus-ring rounded-md bg-teal-500 px-4 py-3 text-center font-semibold text-black"
+                  className="focus-ring rounded-md bg-[var(--accent)] px-4 py-3 text-center font-semibold text-[var(--ink)]"
                   href={project.arUrl}
                 >
                   Try marker AR

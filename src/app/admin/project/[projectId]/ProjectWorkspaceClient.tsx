@@ -534,7 +534,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
           )}
 
           {error ? (
-            <p className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-900">
+            <p className="mt-4 rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-3 text-sm font-semibold text-[var(--ink)]">
               {error}
             </p>
           ) : null}

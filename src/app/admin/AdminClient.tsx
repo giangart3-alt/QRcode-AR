@@ -328,13 +328,13 @@ export function AdminClient() {
         )}
 
         {error ? (
-          <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-900">
+          <div className="mt-6 rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-4 text-sm font-semibold text-[var(--ink)]">
             {error}
           </div>
         ) : null}
 
         {success ? (
-          <div className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900">
+          <div className="mt-6 rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-4 text-sm font-semibold text-[var(--ink)]">
             {success}
           </div>
         ) : null}

@@ -1,15 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f3f6f5;
-  --foreground: #111716;
-  --muted: #596764;
-  --line: #d7e0dd;
-  --panel: #ffffff;
-  --soft: #edf3f1;
-  --accent: #0f766e;
-  --accent-dark: #0b4f49;
-  --ink: #101615;
+  --background: #fff7ed;
+  --foreground: #1c1917;
+  --line: #fed7aa;
+  --accent: #f97316;
+  --muted: var(--foreground);
+  --panel: var(--background);
+  --soft: var(--line);
+  --accent-dark: var(--accent);
+  --ink: var(--foreground);
 }
 
 * {
@@ -40,14 +40,14 @@ input {
 }
 
 .focus-ring:focus-visible {
-  outline: 3px solid rgba(15, 118, 110, 0.35);
+  outline: 3px solid rgba(249, 115, 22, 0.35);
   outline-offset: 2px;
 }
 
 .button-secondary {
   border: 1px solid var(--line);
   border-radius: 0.5rem;
-  background: white;
+  background: var(--panel);
   color: var(--ink);
   display: inline-block;
   font-size: 0.875rem;
@@ -70,7 +70,7 @@ input {
   }
 
   body {
-    background: white;
+    background: var(--panel);
   }
 
   @page {

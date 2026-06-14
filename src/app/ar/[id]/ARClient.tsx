@@ -167,7 +167,7 @@ export function ARClient({ id }: { id: string }) {
 
       const ambient = new THREE.AmbientLight(0xffffff, 1.6);
       markerRoot.add(ambient);
-      const hemisphere = new THREE.HemisphereLight(0xffffff, 0x65756f, 2.8);
+      const hemisphere = new THREE.HemisphereLight(0xffffff, 0xf97316, 2.8);
       markerRoot.add(hemisphere);
       const directional = new THREE.DirectionalLight(0xffffff, 2.8);
       directional.position.set(0.5, 1.4, 0.8);
@@ -341,7 +341,7 @@ export function ARClient({ id }: { id: string }) {
           {project ? (
             <>
               <Link
-                className="focus-ring rounded-lg bg-teal-400 px-3 py-2 text-sm font-semibold text-black hover:bg-teal-300"
+                className="focus-ring rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-[var(--ink)] hover:bg-[var(--accent-dark)]"
                 href={project.viewUrl}
               >
                 Open fallback viewer
@@ -361,7 +361,7 @@ export function ARClient({ id }: { id: string }) {
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 to-transparent p-4">
         <div className="pointer-events-auto flex flex-wrap gap-2">
           <button
-            className="focus-ring rounded-lg bg-white px-3 py-3 text-sm font-bold text-black hover:bg-neutral-200"
+            className="focus-ring rounded-lg bg-[var(--panel)] px-3 py-3 text-sm font-bold text-[var(--ink)] hover:bg-[var(--soft)]"
             onClick={() => setTrackingResetKey((value) => value + 1)}
           >
             Reset tracking
@@ -374,7 +374,7 @@ export function ARClient({ id }: { id: string }) {
           </button>
         </div>
         {debug ? (
-          <pre className="pointer-events-auto mt-3 max-h-[40vh] max-w-2xl overflow-auto rounded-lg bg-black/75 p-3 text-xs leading-5 text-teal-100">
+          <pre className="pointer-events-auto mt-3 max-h-[40vh] max-w-2xl overflow-auto rounded-lg bg-black/75 p-3 text-xs leading-5 text-[var(--soft)]">
             {JSON.stringify(
               {
                 status: runtimeStatus,

@@ -63,7 +63,7 @@ export function ProjectViewerClient({ projectId }: { projectId: string }) {
         : "";
 
   return (
-    <main className="h-screen overflow-hidden bg-[#101615] text-white">
+    <main className="h-screen overflow-hidden bg-[var(--ink)] text-[var(--panel)]">
       <header className="flex h-16 items-center justify-between gap-3 border-b border-white/10 bg-black/35 px-4">
         <div className="min-w-0">
           <h1 className="truncate text-lg font-black">{project?.name || "Project viewer"}</h1>
@@ -71,7 +71,7 @@ export function ProjectViewerClient({ projectId }: { projectId: string }) {
         </div>
         {project ? (
           <div className="flex shrink-0 flex-wrap gap-2">
-            <Link className="focus-ring rounded-lg bg-teal-400 px-4 py-3 text-sm font-semibold text-black hover:bg-teal-300" href={project.arUrl}>
+            <Link className="focus-ring rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-[var(--ink)] hover:bg-[var(--accent-dark)]" href={project.arUrl}>
               Open AR
             </Link>
             <Link className="focus-ring rounded-lg border border-white/20 bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15" href={project.markerUrl}>
@@ -92,14 +92,14 @@ export function ProjectViewerClient({ projectId }: { projectId: string }) {
 
         <aside className="overflow-y-auto border-l border-white/10 bg-black/30 p-5">
           {error || sceneError ? (
-            <p className="rounded-lg border border-red-400/40 bg-red-950/40 p-4 text-sm font-semibold text-red-100">
+            <p className="rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-4 text-sm font-semibold text-[var(--ink)]">
               {error || sceneError}
             </p>
           ) : null}
 
           {project ? (
             <section className="mt-4">
-              <p className="text-xs font-bold uppercase tracking-[0.16em] text-teal-200">Read-only project viewer</p>
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--soft)]">Read-only project viewer</p>
               <h2 className="mt-3 text-3xl font-black">{activeScene?.name || "No active scene"}</h2>
               <div className="mt-5 grid gap-3 text-sm">
                 <Info label="Marker" value={`${project.marker.widthMm} x ${project.marker.heightMm} mm`} />

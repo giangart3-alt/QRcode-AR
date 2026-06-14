@@ -117,7 +117,7 @@ export function EditorClient({ id }: { id: string }) {
     host.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf3f6f5);
+    scene.background = new THREE.Color(0xfff7ed);
 
     const camera = new THREE.PerspectiveCamera(48, 1, 0.01, 200);
     const maxMarkerMeters = Math.max(
@@ -133,7 +133,7 @@ export function EditorClient({ id }: { id: string }) {
 
     const ambient = new THREE.AmbientLight(0xffffff, 1.5);
     scene.add(ambient);
-    const hemisphere = new THREE.HemisphereLight(0xffffff, 0x60706c, 2.2);
+    const hemisphere = new THREE.HemisphereLight(0xffffff, 0xf97316, 2.2);
     scene.add(hemisphere);
     const directional = new THREE.DirectionalLight(0xffffff, 2.4);
     directional.position.set(2, 4, 3);
@@ -157,12 +157,12 @@ export function EditorClient({ id }: { id: string }) {
 
     const border = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.PlaneGeometry(1, 1)),
-      new THREE.LineBasicMaterial({ color: 0x101615 })
+      new THREE.LineBasicMaterial({ color: 0x1c1917 })
     );
     border.rotation.x = -Math.PI / 2;
     markerPlane.add(border);
 
-    const grid = new THREE.GridHelper(maxMarkerMeters, 10, 0x0f766e, 0x9aa8a4);
+    const grid = new THREE.GridHelper(maxMarkerMeters, 10, 0xf97316, 0xfed7aa);
     grid.position.y = 0.002;
     scene.add(grid);
 
@@ -544,7 +544,7 @@ export function EditorClient({ id }: { id: string }) {
                 </button>
               </div>
               {error ? (
-                <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-900">
+                <p className="mt-3 rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-3 text-sm font-semibold text-[var(--ink)]">
                   {error}
                 </p>
               ) : null}

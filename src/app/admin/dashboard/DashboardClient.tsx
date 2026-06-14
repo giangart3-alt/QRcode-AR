@@ -311,7 +311,7 @@ export function DashboardClient() {
         </div>
 
         {error ? (
-          <p className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-900">
+          <p className="mt-6 rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-4 text-sm font-semibold text-[var(--ink)]">
             {error}
           </p>
         ) : null}
