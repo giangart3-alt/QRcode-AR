@@ -1,10 +1,13 @@
 import { ARClient } from "../../[id]/ARClient";
 
 export default async function ProjectARPage({
-  params
+  params,
+  searchParams
 }: {
   params: Promise<{ projectId: string }>;
+  searchParams: Promise<{ debug?: string }>;
 }) {
   const { projectId } = await params;
-  return <ARClient id={projectId} />;
+  const { debug } = await searchParams;
+  return <ARClient id={projectId} debug={debug === "1"} />;
 }

@@ -1,6 +1,13 @@
 import { ARClient } from "./ARClient";
 
-export default async function ARPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ARPage({
+  params,
+  searchParams
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ debug?: string }>;
+}) {
   const { id } = await params;
-  return <ARClient id={id} />;
+  const { debug } = await searchParams;
+  return <ARClient id={id} debug={debug === "1"} />;
 }

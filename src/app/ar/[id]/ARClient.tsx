@@ -4,13 +4,16 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import {
+  DEFAULT_MARKER_HEIGHT_MM,
+  DEFAULT_MARKER_WIDTH_MM,
   HIRO_MARKER_ID,
   HIRO_MARKER_IMAGE_URL,
   HIRO_MARKER_PATTERN_URL,
-  getMarkerBoardImageUrl,
   mmToMeters
 } from "@/lib/placement";
-import { applySceneTransform, computeBaseFitScaleFromObject, computeSceneDisplayScale } from "@/lib/scene-transform";
+import { appPositionMmToThreeMeters, appRotationDegreesToThreeRadians } from "@/lib/coordinates";
+import { computeBaseFitScaleFromObject, computeSceneDisplayScale } from "@/lib/scene-transform";
+import type { MarkerSettings } from "@/lib/placement";
 import type { ProjectMetadata, SceneMetadata } from "@/lib/projects";
 import { loadGltfModel } from "@/lib/three-gltf";
 
@@ -40,43 +43,97 @@ declare global {
   }
 }
 
-type RuntimeStatus = Record<
-  "project" | "webgl" | "camera" | "marker" | "model" | "tracking",
-  string
->;
+type PublicStatus =
+  | "camera loading"
+  | "marker searching"
+  | "marker found"
+  | "marker lost"
+  | "loading model"
+  | "model loaded"
+  | "model error";
+
+type RuntimeStatus = {
+  projectLoading: boolean;
+  projectLoaded: boolean;
+  cameraActive: boolean;
+  arjsInitialized: boolean;
+  selectedSceneId: string;
+  selectedSceneName: string;
+  modelLoading: boolean;
+  modelLoaded: boolean;
+  modelError: string;
+  markerFound: boolean;
+  modelAttachedToMarker: boolean;
+  modelUrl: string;
+  modelPathname: string;
+  computedScale: number | null;
+  finalScaleApplied: number | null;
+  scaleMode: string;
+  modelDimensions: {
+    widthM: number;
+    heightM: number;
+    depthM: number;
+  } | null;
+  markerDimensions: {
+    widthM: number;
+    heightM: number;
+    trackingSizeM: number;
+  };
+  lastError: string;
+};
 
 const AR_SCRIPT = "https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.7/three.js/build/ar-threex.js";
 const CAMERA_PARAMETERS = "https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.7/data/data/camera_para.dat";
 const LAST_POSE_HOLD_MS = 3000;
 
-export function ARClient({ id }: { id: string }) {
+const INITIAL_STATUS: RuntimeStatus = {
+  projectLoading: true,
+  projectLoaded: false,
+  cameraActive: false,
+  arjsInitialized: false,
+  selectedSceneId: "",
+  selectedSceneName: "",
+  modelLoading: false,
+  modelLoaded: false,
+  modelError: "",
+  markerFound: false,
+  modelAttachedToMarker: false,
+  modelUrl: "",
+  modelPathname: "",
+  computedScale: null,
+  finalScaleApplied: null,
+  scaleMode: "",
+  modelDimensions: null,
+  markerDimensions: {
+    widthM: mmToMeters(DEFAULT_MARKER_WIDTH_MM),
+    heightM: mmToMeters(DEFAULT_MARKER_HEIGHT_MM),
+    trackingSizeM: 1
+  },
+  lastError: ""
+};
+
+export function ARClient({ id, debug = false }: { id: string; debug?: boolean }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const [project, setProject] = useState<ProjectMetadata | null>(null);
-  const [message, setMessage] = useState("Loading project...");
-  const [debug, setDebug] = useState(false);
+  const [publicStatus, setPublicStatus] = useState<PublicStatus>("camera loading");
   const [trackingResetKey, setTrackingResetKey] = useState(0);
-  const [lastError, setLastError] = useState("");
-  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>({
-    project: "loading",
-    webgl: "pending",
-    camera: "pending",
-    marker: "pending",
-    model: "pending",
-    tracking: "pending"
-  });
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>(INITIAL_STATUS);
 
-  const setStatus = useCallback((key: keyof RuntimeStatus, value: string) => {
-    setRuntimeStatus((current) =>
-      current[key] === value ? current : { ...current, [key]: value }
-    );
+  const patchRuntimeStatus = useCallback((next: Partial<RuntimeStatus>) => {
+    setRuntimeStatus((current) => ({ ...current, ...next }));
   }, []);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadProject() {
-      setStatus("project", "loading");
+      setPublicStatus("camera loading");
+      patchRuntimeStatus({
+        ...INITIAL_STATUS,
+        projectLoading: true
+      });
+
       const response = await fetch(`/api/projects/${id}`, { cache: "no-store" });
       const result = (await response.json()) as {
         project?: ProjectMetadata;
@@ -86,72 +143,121 @@ export function ARClient({ id }: { id: string }) {
       if (cancelled) return;
 
       if (!response.ok || !result.project) {
-        const errorMessage = result.error || "Model not found.";
-        setStatus("project", errorMessage);
-        setMessage(errorMessage);
-        setLastError(errorMessage);
+        const errorMessage = result.error || "Project not found.";
+        setPublicStatus("model error");
+        patchRuntimeStatus({
+          projectLoading: false,
+          projectLoaded: false,
+          modelError: errorMessage,
+          lastError: errorMessage
+        });
         return;
       }
 
+      const selectedScene = getActiveSceneForClient(result.project);
       setProject(result.project);
-      setStatus("project", "loaded");
-      setLastError("");
-      setMessage("Project loaded. Preparing camera...");
+      patchRuntimeStatus({
+        projectLoading: false,
+        projectLoaded: true,
+        selectedSceneId: selectedScene?.id || "",
+        selectedSceneName: selectedScene?.name || "",
+        modelUrl: selectedScene?.modelUrl || "",
+        modelPathname: selectedScene?.modelPathname || "",
+        scaleMode: selectedScene?.scaleMode || "",
+        markerDimensions: markerDimensions(result.project.marker),
+        lastError: "",
+        modelError: ""
+      });
     }
 
     loadProject().catch((caught) => {
+      if (cancelled) return;
       const errorMessage = caught instanceof Error ? caught.message : "Unable to load project.";
-      setStatus("project", errorMessage);
-      setMessage(errorMessage);
-      setLastError(errorMessage);
+      setPublicStatus("model error");
+      patchRuntimeStatus({
+        projectLoading: false,
+        projectLoaded: false,
+        modelError: errorMessage,
+        lastError: errorMessage
+      });
     });
 
     return () => {
       cancelled = true;
     };
-  }, [id, setStatus]);
+  }, [id, patchRuntimeStatus]);
 
   useEffect(() => {
     if (!project || !mountRef.current) return;
 
     cleanupRef.current?.();
     const currentProject = project;
-    const activeScene = getActiveSceneForClient(currentProject);
+    const selectedScene = getActiveSceneForClient(currentProject);
     const marker = currentProject.marker;
-    const trackingPatternUrl = HIRO_MARKER_PATTERN_URL;
-    const trackingMarkerSizeM = mmToMeters(marker.trackingMarkerSizeOnBoardMm);
+    const markerSizeM = safeTrackingMarkerSizeMeters(marker);
     let stopped = false;
     let animationFrame = 0;
     let resizeHandler: (() => void) | null = null;
+    let markerWasSeen = false;
+    let lastSeen = 0;
     let lastTrackingState = "";
+    let modelLoaded = false;
 
     async function start() {
+      setPublicStatus("camera loading");
+      patchRuntimeStatus({
+        cameraActive: false,
+        arjsInitialized: false,
+        markerFound: false,
+        modelAttachedToMarker: false,
+        modelLoading: false,
+        modelLoaded: false,
+        modelError: "",
+        lastError: "",
+        computedScale: null,
+        finalScaleApplied: null,
+        modelDimensions: null,
+        markerDimensions: markerDimensions(marker)
+      });
+
       if (!navigator.mediaDevices?.getUserMedia) {
-        setStatus("camera", "unsupported");
-        setMessage("Unsupported browser. Try Chrome on Android, or use the fallback viewer.");
+        const errorMessage = "Camera API is unavailable in this browser.";
+        setPublicStatus("model error");
+        patchRuntimeStatus({ lastError: errorMessage, modelError: errorMessage });
         return;
       }
 
+      if (!selectedScene) {
+        const errorMessage = "No active scene has been created yet.";
+        setPublicStatus("model error");
+        patchRuntimeStatus({ lastError: errorMessage, modelError: errorMessage });
+        return;
+      }
+
+      if (!selectedScene.modelUrl) {
+        const errorMessage = "Active scene does not have a GLB model yet.";
+        setPublicStatus("model error");
+        patchRuntimeStatus({ lastError: errorMessage, modelError: errorMessage });
+        return;
+      }
+
+      const activeScene = selectedScene;
       window.THREE = THREE;
-      setLastError("");
-      setStatus("marker", "loading tracking runtime");
-      setMessage("Loading marker tracking...");
 
       try {
         await loadScript(AR_SCRIPT);
       } catch (caught) {
-        const errorMessage = caught instanceof Error ? caught.message : "Unable to load the marker tracking library.";
-        setStatus("marker", "tracking runtime failed");
-        setLastError(errorMessage);
-        setMessage("Unable to load the marker tracking library. Use the fallback viewer.");
+        const errorMessage = caught instanceof Error ? caught.message : "Unable to load AR.js.";
+        setPublicStatus("model error");
+        patchRuntimeStatus({ lastError: errorMessage, modelError: errorMessage });
         return;
       }
 
       const mount = mountRef.current;
       if (!window.THREEx || stopped || !mount) {
-        setStatus("marker", "tracking runtime unavailable");
-        setLastError("AR.js runtime is unavailable.");
-        setMessage("Unsupported browser. Use the fallback viewer.");
+        const errorMessage = "AR.js runtime is unavailable.";
+        setPublicStatus("model error");
+        patchRuntimeStatus({ lastError: errorMessage, modelError: errorMessage });
         return;
       }
 
@@ -160,19 +266,17 @@ export function ARClient({ id }: { id: string }) {
         renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
         renderer.getContext();
       } catch (caught) {
-        const errorMessage = caught instanceof Error ? caught.message : "WebGL is unavailable in this browser.";
-        setStatus("webgl", "unavailable");
-        setLastError(errorMessage);
-        setMessage("WebGL is unavailable in this browser.");
+        const errorMessage = caught instanceof Error ? caught.message : "WebGL is unavailable.";
+        setPublicStatus("model error");
+        patchRuntimeStatus({ lastError: errorMessage, modelError: errorMessage });
         return;
       }
 
-      setStatus("webgl", "ready");
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(window.innerWidth, window.innerHeight);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.15;
+      renderer.toneMappingExposure = 1.2;
       Object.assign(renderer.domElement.style, {
         position: "absolute",
         inset: "0",
@@ -181,28 +285,24 @@ export function ARClient({ id }: { id: string }) {
       });
       mount.appendChild(renderer.domElement);
 
-      const scene = new THREE.Scene();
+      const threeScene = new THREE.Scene();
       const camera = new THREE.Camera();
-      scene.add(camera);
+      threeScene.add(camera);
 
       const markerRoot = new THREE.Group();
       markerRoot.visible = false;
-      scene.add(markerRoot);
-      const boardRoot = new THREE.Group();
-      boardRoot.position.set(
-        -mmToMeters(marker.trackingMarkerPositionOnBoard.xMm),
-        0,
-        mmToMeters(marker.trackingMarkerPositionOnBoard.yMm)
-      );
-      markerRoot.add(boardRoot);
+      threeScene.add(markerRoot);
 
-      const ambient = new THREE.AmbientLight(0xffffff, 1.6);
-      boardRoot.add(ambient);
-      const hemisphere = new THREE.HemisphereLight(0xffffff, 0xf97316, 2.8);
-      boardRoot.add(hemisphere);
-      const directional = new THREE.DirectionalLight(0xffffff, 2.8);
-      directional.position.set(0.5, 1.4, 0.8);
-      boardRoot.add(directional);
+      markerRoot.add(new THREE.AmbientLight(0xffffff, 2));
+      const hemisphere = new THREE.HemisphereLight(0xffffff, 0xd7dee8, 3);
+      markerRoot.add(hemisphere);
+      const directional = new THREE.DirectionalLight(0xffffff, 3);
+      directional.position.set(0.6, 1.4, 0.8);
+      markerRoot.add(directional);
+
+      const modelAnchor = new THREE.Group();
+      modelAnchor.visible = true;
+      markerRoot.add(modelAnchor);
 
       const arToolkitSource = new window.THREEx.ArToolkitSource({
         sourceType: "webcam",
@@ -212,12 +312,9 @@ export function ARClient({ id }: { id: string }) {
         displayHeight: window.innerHeight
       });
 
-      setStatus("camera", "requesting camera");
-      setMessage("Requesting camera permission...");
-
       try {
         await new Promise<void>((resolve, reject) => {
-          const timeout = window.setTimeout(() => reject(new Error("Camera permission denied.")), 15000);
+          const timeout = window.setTimeout(() => reject(new Error("Camera permission timed out.")), 15000);
           arToolkitSource.init(
             () => {
               window.clearTimeout(timeout);
@@ -229,36 +326,34 @@ export function ARClient({ id }: { id: string }) {
             }
           );
         });
-        const video = arToolkitSource.domElement;
-        video.setAttribute("playsinline", "true");
-        video.muted = true;
-        Object.assign(video.style, {
-          position: "absolute",
-          inset: "0",
-          width: "100%",
-          height: "100%",
-          objectFit: "cover",
-          zIndex: "0"
-        });
-        mount.prepend(video);
-        setStatus("camera", "active");
-        setMessage("Camera active. Initializing marker tracking...");
       } catch (caught) {
         const errorMessage = caught instanceof Error ? caught.message : "Camera permission denied.";
-        setStatus("camera", "camera error");
-        setLastError(errorMessage);
-        setMessage("Camera permission denied. Allow camera access, then reload this page.");
+        setPublicStatus("model error");
+        patchRuntimeStatus({ lastError: errorMessage, modelError: errorMessage });
         renderer.dispose();
         renderer.domElement.remove();
         return;
       }
+
+      const video = arToolkitSource.domElement;
+      video.setAttribute("playsinline", "true");
+      video.muted = true;
+      Object.assign(video.style, {
+        position: "absolute",
+        inset: "0",
+        width: "100%",
+        height: "100%",
+        objectFit: "cover",
+        zIndex: "0"
+      });
+      mount.prepend(video);
+      patchRuntimeStatus({ cameraActive: true });
 
       const arToolkitContext = new window.THREEx.ArToolkitContext({
         cameraParametersUrl: CAMERA_PARAMETERS,
         detectionMode: "mono"
       });
 
-      setStatus("marker", "initializing");
       await new Promise<void>((resolve) => {
         arToolkitContext.init(() => {
           camera.projectionMatrix.copy(arToolkitContext.getProjectionMatrix());
@@ -268,11 +363,13 @@ export function ARClient({ id }: { id: string }) {
 
       new window.THREEx.ArMarkerControls(arToolkitContext, markerRoot, {
         type: "pattern",
-        patternUrl: trackingPatternUrl,
-        size: trackingMarkerSizeM,
+        patternUrl: HIRO_MARKER_PATTERN_URL,
+        size: markerSizeM,
         changeMatrixMode: "modelViewMatrix"
       });
-      setStatus("marker", "pattern loaded");
+
+      patchRuntimeStatus({ arjsInitialized: true });
+      setPublicStatus("marker searching");
 
       resizeHandler = () => {
         arToolkitSource.onResizeElement();
@@ -288,58 +385,25 @@ export function ARClient({ id }: { id: string }) {
         stopped = true;
         window.cancelAnimationFrame(animationFrame);
         if (resizeHandler) window.removeEventListener("resize", resizeHandler);
+        disposeObject(modelAnchor);
         renderer.dispose();
-        const video = arToolkitSource.domElement;
         const stream = video.srcObject instanceof MediaStream ? video.srcObject : null;
         stream?.getTracks().forEach((track) => track.stop());
         video.remove();
         renderer.domElement.remove();
       };
 
-      setStatus("model", "loading");
-      setMessage("Loading model...");
-
-      try {
-        if (!activeScene) {
-          throw new Error("No active scene has been created yet.");
-        }
-
-        if (!activeScene.modelUrl) {
-          throw new Error("Active scene does not have a GLB model yet.");
-        }
-
-        const gltf = await loadGltfModel(activeScene.modelUrl);
-        if (stopped) return;
-
-        const model = gltf.scene;
-        model.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            child.frustumCulled = false;
-          }
-        });
-        const fit = computeBaseFitScaleFromObject(model, marker);
-        const displayedScale = computeSceneDisplayScale(activeScene, fit.baseFitScale);
-        applySceneTransform(model, activeScene, displayedScale);
-        boardRoot.add(model);
-        setStatus("model", "loaded");
-        setMessage("Camera active. Point at the AR tracking marker.");
-      } catch (caught) {
-        const errorMessage = caught instanceof Error ? caught.message : "Model loading error.";
-        setStatus("model", errorMessage);
-        setLastError(errorMessage);
-        setMessage(errorMessage);
-        return;
-      }
-
-      let lastSeen = 0;
-      let markerWasSeen = false;
-
-      function updateTrackingState(nextState: string) {
+      function updateTrackingState(nextState: "marker searching" | "marker found" | "marker lost") {
         if (lastTrackingState === nextState) return;
         lastTrackingState = nextState;
-        setStatus("marker", nextState);
-        setStatus("tracking", nextState);
-        setMessage(nextState);
+        patchRuntimeStatus({ markerFound: nextState === "marker found" });
+
+        if (nextState === "marker found" && modelLoaded) {
+          setPublicStatus("model loaded");
+          return;
+        }
+
+        setPublicStatus(nextState);
       }
 
       function animate() {
@@ -353,45 +417,86 @@ export function ARClient({ id }: { id: string }) {
           if (markerVisibleAfterUpdate) {
             markerWasSeen = true;
             lastSeen = Date.now();
-            setModelOpacity(markerRoot, 1);
+            setModelOpacity(modelAnchor, 1);
             updateTrackingState("marker found");
           } else if (!markerWasSeen) {
             markerRoot.visible = false;
             updateTrackingState("marker searching");
           } else if (Date.now() - lastSeen < LAST_POSE_HOLD_MS) {
             markerRoot.visible = true;
-            setModelOpacity(markerRoot, 0.68);
+            setModelOpacity(modelAnchor, 0.72);
             updateTrackingState("marker lost");
           } else {
-            markerRoot.visible = true;
-            setModelOpacity(markerRoot, 0.28);
+            markerRoot.visible = false;
+            setModelOpacity(modelAnchor, 1);
             updateTrackingState("marker lost");
           }
         }
 
-        renderer.render(scene, camera);
+        renderer.render(threeScene, camera);
+      }
+
+      async function loadActiveModel() {
+        setPublicStatus("loading model");
+        patchRuntimeStatus({
+          modelLoading: true,
+          modelLoaded: false,
+          modelError: "",
+          lastError: ""
+        });
+
+        try {
+          const gltf = await loadGltfModel(activeScene.modelUrl);
+          if (stopped) return;
+
+          const prepared = prepareModelForAr(gltf.scene, activeScene, marker);
+          modelAnchor.add(prepared.root);
+          modelLoaded = true;
+
+          patchRuntimeStatus({
+            selectedSceneId: activeScene.id,
+            selectedSceneName: activeScene.name,
+            modelUrl: activeScene.modelUrl,
+            modelPathname: activeScene.modelPathname,
+            modelLoading: false,
+            modelLoaded: true,
+            modelError: "",
+            modelAttachedToMarker: true,
+            computedScale: prepared.computedScale,
+            finalScaleApplied: prepared.finalScaleApplied,
+            scaleMode: activeScene.scaleMode,
+            modelDimensions: prepared.modelDimensions,
+            markerDimensions: markerDimensions(marker),
+            lastError: prepared.usedScaleFallback ? "Saved scale was unsafe; visible fit scale applied." : ""
+          });
+
+          setPublicStatus(markerWasSeen ? "model loaded" : "marker searching");
+        } catch (caught) {
+          const errorMessage = caught instanceof Error ? caught.message : "Unable to load GLB model.";
+          modelLoaded = false;
+          setPublicStatus("model error");
+          patchRuntimeStatus({
+            modelLoading: false,
+            modelLoaded: false,
+            modelError: errorMessage,
+            lastError: errorMessage
+          });
+        }
       }
 
       animate();
-
-      cleanupRef.current = () => {
-        stopped = true;
-        window.cancelAnimationFrame(animationFrame);
-        if (resizeHandler) window.removeEventListener("resize", resizeHandler);
-        renderer.dispose();
-        const video = arToolkitSource.domElement;
-        const stream = video.srcObject instanceof MediaStream ? video.srcObject : null;
-        stream?.getTracks().forEach((track) => track.stop());
-        video.remove();
-        renderer.domElement.remove();
-      };
+      void loadActiveModel();
     }
 
     start().catch((caught) => {
       const errorMessage = caught instanceof Error ? caught.message : "AR runtime error.";
-      setMessage(errorMessage);
-      setStatus("tracking", errorMessage);
-      setLastError(errorMessage);
+      setPublicStatus("model error");
+      patchRuntimeStatus({
+        modelLoading: false,
+        modelLoaded: false,
+        modelError: errorMessage,
+        lastError: errorMessage
+      });
     });
 
     return () => {
@@ -399,89 +504,85 @@ export function ARClient({ id }: { id: string }) {
       cleanupRef.current?.();
       cleanupRef.current = null;
     };
-  }, [project, trackingResetKey, setStatus]);
+  }, [project, trackingResetKey, patchRuntimeStatus]);
 
-  const activeSceneForDebug = project ? getActiveSceneForClient(project) : null;
+  const showFallbackViewer = publicStatus === "model error" && Boolean(project?.viewUrl);
 
   return (
     <main className="fixed inset-0 overflow-hidden bg-black text-white">
       <div ref={mountRef} className="absolute inset-0" />
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black/85 to-transparent p-4">
-        <div className="pointer-events-auto flex flex-wrap items-center gap-2">
-          <Link className="focus-ring rounded-lg bg-white/15 px-3 py-2 text-sm font-semibold backdrop-blur hover:bg-white/25" href="/">
-            Home
-          </Link>
-          {project ? (
-            <>
-              <Link
-                className="focus-ring rounded-lg bg-[var(--accent)] px-3 py-2 text-sm font-semibold text-[var(--ink)] hover:bg-[var(--accent-dark)]"
-                href={project.viewUrl}
-              >
-                Open viewer
-              </Link>
-              <Link
-                className="focus-ring rounded-lg bg-white/15 px-3 py-2 text-sm font-semibold backdrop-blur hover:bg-white/25"
-                href="/ar/test"
-              >
-                Open AR test
-              </Link>
-            </>
-          ) : null}
-        </div>
-        <p className="mt-3 max-w-xl rounded-lg bg-black/55 p-3 text-sm font-semibold backdrop-blur">{message}</p>
+
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 p-3">
+        <p className="inline-block rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] backdrop-blur">
+          {publicStatus}
+        </p>
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 to-transparent p-4">
-        <div className="pointer-events-auto flex flex-wrap gap-2">
-          <button
-            className="focus-ring rounded-lg bg-[var(--panel)] px-3 py-3 text-sm font-bold text-[var(--ink)] hover:bg-[var(--soft)]"
-            onClick={() => setTrackingResetKey((value) => value + 1)}
+      {showFallbackViewer ? (
+        <div className="absolute inset-x-0 bottom-0 z-10 p-3">
+          <Link
+            className="focus-ring inline-flex rounded bg-white px-3 py-2 text-sm font-semibold text-black"
+            href={project?.viewUrl || "#"}
           >
-            Retry camera/tracking
-          </button>
-          <button
-            className="focus-ring rounded-lg bg-white/15 px-3 py-3 text-sm font-bold backdrop-blur hover:bg-white/25"
-            onClick={() => setDebug((value) => !value)}
-          >
-            Debug
-          </button>
+            Open 3D viewer
+          </Link>
         </div>
-        {debug ? (
-          <pre className="pointer-events-auto mt-3 max-h-[40vh] max-w-2xl overflow-auto rounded-lg bg-black/75 p-3 text-xs leading-5 text-[var(--soft)]">
+      ) : null}
+
+      {debug ? (
+        <div className="absolute inset-x-0 bottom-0 z-20 max-h-[60vh] overflow-auto bg-black/80 p-3 backdrop-blur">
+          <div className="mb-3 flex flex-wrap gap-2">
+            <Link className="focus-ring rounded bg-white/15 px-3 py-2 text-xs font-semibold hover:bg-white/25" href="/">
+              Home
+            </Link>
+            {project ? (
+              <Link className="focus-ring rounded bg-white/15 px-3 py-2 text-xs font-semibold hover:bg-white/25" href={project.viewUrl}>
+                Open viewer
+              </Link>
+            ) : null}
+            <Link className="focus-ring rounded bg-white/15 px-3 py-2 text-xs font-semibold hover:bg-white/25" href="/ar/test">
+              Open AR test
+            </Link>
+            <button
+              className="focus-ring rounded bg-white px-3 py-2 text-xs font-semibold text-black hover:bg-white/90"
+              onClick={() => setTrackingResetKey((value) => value + 1)}
+            >
+              Retry camera/tracking
+            </button>
+          </div>
+          <pre className="max-w-3xl overflow-auto rounded bg-black/70 p-3 text-xs leading-5 text-[var(--soft)]">
             {JSON.stringify(
               {
-                status: runtimeStatus,
-                cameraActive: runtimeStatus.camera === "active",
-                arjsInitialized: ["pattern loaded", "marker searching", "marker found", "marker lost"].includes(runtimeStatus.marker),
+                projectLoading: runtimeStatus.projectLoading,
+                projectLoaded: runtimeStatus.projectLoaded,
+                cameraActive: runtimeStatus.cameraActive,
+                arjsInitialized: runtimeStatus.arjsInitialized,
                 markerPatternUrl: HIRO_MARKER_PATTERN_URL,
-                markerFound: runtimeStatus.tracking === "marker found",
-                activeProjectId: project?.id,
-                activeSceneId: activeSceneForDebug?.id || "",
-                modelLoaded: runtimeStatus.model === "loaded",
-                modelUrl: activeSceneForDebug?.modelUrl || "",
-                modelPath: activeSceneForDebug?.modelPathname || "",
-                lastError,
-                markerStyle: project?.marker.styleId,
-                boardStyle: project?.marker.boardStyle,
-                boardSizeMm: project ? `${project.marker.widthMm} x ${project.marker.heightMm}` : "",
-                boardImage: project ? getMarkerBoardImageUrl(project.marker) : "",
+                markerFound: runtimeStatus.markerFound,
+                activeProjectId: project?.id || id,
+                activeSceneId: runtimeStatus.selectedSceneId,
+                selectedSceneName: runtimeStatus.selectedSceneName,
+                modelUrl: runtimeStatus.modelUrl,
+                modelPathname: runtimeStatus.modelPathname,
+                modelLoading: runtimeStatus.modelLoading,
+                modelLoaded: runtimeStatus.modelLoaded,
+                modelAttachedToMarker: runtimeStatus.modelAttachedToMarker,
+                modelError: runtimeStatus.modelError,
+                modelDimensions: runtimeStatus.modelDimensions,
+                markerDimensions: runtimeStatus.markerDimensions,
+                scaleMode: runtimeStatus.scaleMode,
+                computedScale: runtimeStatus.computedScale,
+                finalScaleApplied: runtimeStatus.finalScaleApplied,
                 trackingMarkerId: HIRO_MARKER_ID,
-                trackingMarkerType: project?.marker.trackingMarkerType,
-                trackingMarkerSizeMm: project?.marker.trackingMarkerSizeOnBoardMm,
                 trackingMarkerImage: HIRO_MARKER_IMAGE_URL,
-                trackingMarkerPattern: HIRO_MARKER_PATTERN_URL,
-                trackingMarkerPositionOnBoard: project?.marker.trackingMarkerPositionOnBoard,
-                activeSceneLoaded: Boolean(activeSceneForDebug),
-                webgl: runtimeStatus.webgl,
-                placement: activeSceneForDebug?.placement || null,
-                userAgent: navigator.userAgent
+                lastError: runtimeStatus.lastError
               },
               null,
               2
             )}
           </pre>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -492,6 +593,137 @@ function getActiveSceneForClient(project: ProjectMetadata): SceneMetadata | null
     project.scenes[0] ||
     null
   );
+}
+
+function prepareModelForAr(
+  model: THREE.Object3D,
+  scene: SceneMetadata,
+  marker: MarkerSettings
+) {
+  forceVisibleModel(model);
+
+  const root = new THREE.Group();
+  root.visible = true;
+  root.add(model);
+
+  const sourceBox = validBox(new THREE.Box3().setFromObject(model));
+  const sourceSize = sourceBox.getSize(new THREE.Vector3());
+  const sourceCenter = sourceBox.getCenter(new THREE.Vector3());
+
+  model.position.set(
+    -sourceCenter.x,
+    -sourceBox.min.y,
+    -sourceCenter.z
+  );
+  model.updateMatrixWorld(true);
+  root.updateMatrixWorld(true);
+
+  const normalizedBox = validBox(new THREE.Box3().setFromObject(root));
+  const normalizedSize = normalizedBox.getSize(new THREE.Vector3());
+  const fit = computeBaseFitScaleFromObject(root, {
+    widthMm: positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM),
+    heightMm: positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM)
+  });
+  const scale = computeSafeArScale(scene, fit, marker);
+
+  applySafeArTransform(root, scene, marker, scale.finalScaleApplied);
+
+  return {
+    root,
+    computedScale: scale.computedScale,
+    finalScaleApplied: scale.finalScaleApplied,
+    usedScaleFallback: scale.usedFallback,
+    modelDimensions: {
+      widthM: roundForDebug(normalizedSize.x || sourceSize.x),
+      heightM: roundForDebug(normalizedSize.y || sourceSize.y),
+      depthM: roundForDebug(normalizedSize.z || sourceSize.z)
+    }
+  };
+}
+
+function computeSafeArScale(
+  scene: SceneMetadata,
+  fit: {
+    modelWidthM: number;
+    modelDepthM: number;
+    baseFitScale: number;
+  },
+  marker: MarkerSettings
+) {
+  const markerWidthM = Math.max(mmToMeters(positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM)), 0.001);
+  const markerHeightM = Math.max(mmToMeters(positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM)), 0.001);
+  const markerShortM = Math.min(markerWidthM, markerHeightM);
+  const markerLongM = Math.max(markerWidthM, markerHeightM);
+  const fallbackScale = positiveNumber(fit.baseFitScale, 1);
+  const computedScale = computeSceneDisplayScale(scene, fallbackScale);
+  const modelFootprint = Math.max(fit.modelWidthM, fit.modelDepthM, 0.001);
+  const finalFootprint = modelFootprint * computedScale;
+  const minVisibleFootprint = Math.max(markerShortM * 0.04, 0.04);
+  const maxVisibleFootprint = Math.max(markerLongM * 6, 3);
+  const unsafe =
+    !Number.isFinite(computedScale) ||
+    computedScale <= 0 ||
+    finalFootprint < minVisibleFootprint ||
+    finalFootprint > maxVisibleFootprint;
+
+  return {
+    computedScale: roundForDebug(computedScale),
+    finalScaleApplied: roundForDebug(unsafe ? fallbackScale : computedScale),
+    usedFallback: unsafe
+  };
+}
+
+function applySafeArTransform(
+  root: THREE.Object3D,
+  scene: SceneMetadata,
+  marker: MarkerSettings,
+  scale: number
+) {
+  const markerMaxM = Math.max(
+    mmToMeters(positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM)),
+    mmToMeters(positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM))
+  );
+  const position = scene.placement?.position || { x: 0, y: 0, z: 0 };
+  const safePosition = {
+    x: clampAppMm(position.x, markerMaxM),
+    y: clampAppMm(position.y, markerMaxM),
+    z: clampHeightMm(position.z, markerMaxM)
+  };
+  const rotation = scene.placement?.rotation || { x: 0, y: 0, z: 0 };
+  const safeRotation = {
+    x: finiteNumber(rotation.x, 0),
+    y: finiteNumber(rotation.y, 0),
+    z: finiteNumber(rotation.z, 0)
+  };
+
+  root.position.copy(appPositionMmToThreeMeters(safePosition));
+  root.rotation.copy(appRotationDegreesToThreeRadians(safeRotation));
+  root.scale.setScalar(positiveNumber(scale, 1));
+  root.visible = true;
+  root.updateMatrixWorld(true);
+}
+
+function forceVisibleModel(root: THREE.Object3D) {
+  root.visible = true;
+  root.traverse((child) => {
+    child.visible = true;
+
+    if (!(child instanceof THREE.Mesh)) return;
+
+    child.castShadow = true;
+    child.receiveShadow = true;
+    child.frustumCulled = false;
+
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach((material) => {
+      material.visible = true;
+      if (!Number.isFinite(material.opacity) || material.opacity <= 0) {
+        material.opacity = 1;
+        material.transparent = false;
+      }
+      material.needsUpdate = true;
+    });
+  });
 }
 
 function loadScript(src: string) {
@@ -531,4 +763,75 @@ function setModelOpacity(root: THREE.Object3D, opacity: number) {
       material.needsUpdate = true;
     });
   });
+}
+
+function disposeObject(root: THREE.Object3D) {
+  root.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.geometry.dispose();
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      materials.forEach((material) => material.dispose());
+    }
+  });
+}
+
+function markerDimensions(marker: MarkerSettings) {
+  return {
+    widthM: roundForDebug(mmToMeters(positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM))),
+    heightM: roundForDebug(mmToMeters(positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM))),
+    trackingSizeM: roundForDebug(safeTrackingMarkerSizeMeters(marker))
+  };
+}
+
+function safeTrackingMarkerSizeMeters(marker: MarkerSettings) {
+  const sizeMm = positiveNumber(
+    marker.trackingMarkerSizeOnBoardMm,
+    Math.min(
+      positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM),
+      positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM)
+    )
+  );
+  return Math.max(mmToMeters(sizeMm), 0.05);
+}
+
+function validBox(box: THREE.Box3) {
+  if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) {
+    return new THREE.Box3(
+      new THREE.Vector3(-0.5, 0, -0.5),
+      new THREE.Vector3(0.5, 1, 0.5)
+    );
+  }
+
+  if (box.isEmpty()) {
+    return new THREE.Box3(
+      new THREE.Vector3(-0.5, 0, -0.5),
+      new THREE.Vector3(0.5, 1, 0.5)
+    );
+  }
+
+  return box;
+}
+
+function clampAppMm(value: number, markerMaxM: number) {
+  const meters = mmToMeters(finiteNumber(value, 0));
+  if (Math.abs(meters) > markerMaxM * 4) return 0;
+  return value;
+}
+
+function clampHeightMm(value: number, markerMaxM: number) {
+  const meters = mmToMeters(finiteNumber(value, 0));
+  if (meters < -markerMaxM || meters > markerMaxM * 6) return 0;
+  return value;
+}
+
+function positiveNumber(value: number | undefined, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function finiteNumber(value: number | undefined, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function roundForDebug(value: number) {
+  return Number.isFinite(value) ? Math.round(value * 100000) / 100000 : value;
 }
