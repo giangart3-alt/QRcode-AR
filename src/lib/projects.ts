@@ -1,17 +1,15 @@
 import { del, list, put } from "@vercel/blob";
 import { migrateLegacyYUpPlacementToZUp } from "@/lib/coordinates";
 import {
-  createDefaultMarker,
   createDefaultPlacement,
-  MARKER_IMAGE_URL,
-  MARKER_PATTERN_URL,
-  normalizeMarker,
+  createDefaultTarget,
   normalizePlacement,
-  type MarkerSettings,
+  normalizeTarget,
+  type ImageTargetSettings,
   type PlacementMetadata
 } from "@/lib/placement";
 
-export const PROJECT_SCHEMA_VERSION = 3;
+export const PROJECT_SCHEMA_VERSION = 4;
 
 export type ScaleMode = "fit" | "architectural";
 
@@ -33,7 +31,6 @@ export type SceneMetadata = {
 export type ProjectUrls = {
   arUrl: string;
   viewUrl: string;
-  markerUrl: string;
   dashboardUrl: string;
   editorUrl: string;
   legacyArUrl: string;
@@ -44,7 +41,7 @@ export type ProjectMetadata = {
   id: string;
   name: string;
   schemaVersion: number;
-  marker: MarkerSettings;
+  target: ImageTargetSettings;
   activeSceneId: string;
   scenes: SceneMetadata[];
   createdAt: string;
@@ -52,7 +49,6 @@ export type ProjectMetadata = {
   urls: ProjectUrls;
   arUrl: string;
   viewUrl: string;
-  markerUrl: string;
   editorUrl: string;
   scale: number;
   verticalOffset: number;
@@ -72,7 +68,6 @@ export type ProjectSummary = {
   updatedAt: string;
   arUrl: string;
   viewUrl: string;
-  markerUrl: string;
 };
 
 export class BlobConfigurationError extends Error {
@@ -84,11 +79,7 @@ export class BlobConfigurationError extends Error {
   }
 }
 
-type LegacyProjectShape = Partial<ProjectMetadata> & {
-  markerWidthMm?: number;
-  markerHeightMm?: number;
-  markerImage?: string;
-};
+type LegacyProjectShape = Partial<ProjectMetadata> & Record<string, unknown>;
 
 export function assertBlobConfigured() {
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
@@ -113,7 +104,6 @@ export function projectUrls(id: string): ProjectUrls {
   return {
     arUrl: `${siteUrl}/ar/project/${id}`,
     viewUrl: `${siteUrl}/view/project/${id}`,
-    markerUrl: `${siteUrl}/marker/${id}`,
     dashboardUrl: `${siteUrl}/admin/project/${id}`,
     editorUrl: `${siteUrl}/editor/${id}`,
     legacyArUrl: `${siteUrl}/ar/${id}`,
@@ -172,7 +162,7 @@ export function createScene(input: {
 export function createProject(input: {
   name: string;
   scene?: SceneMetadata | null;
-  marker?: Partial<MarkerSettings> | null;
+  target?: Partial<ImageTargetSettings> | null;
 }) {
   const id = sanitizeId(input.name);
   const now = new Date().toISOString();
@@ -183,7 +173,7 @@ export function createProject(input: {
     id,
     name: input.name,
     schemaVersion: PROJECT_SCHEMA_VERSION,
-    marker: normalizeMarker(input.marker || createDefaultMarker()),
+    target: normalizeTarget(input.target || createDefaultTarget()),
     activeSceneId,
     scenes,
     createdAt: now,
@@ -288,12 +278,11 @@ export async function deleteSceneAndAssets(projectId: string, sceneId: string) {
   }
 
   const scene = project.scenes.find((item) => item.id === sceneId);
-  if (!scene) {
-    return { project, scene: null, deletedAssets: [] };
-  }
+  if (!scene) return { project, scene: null, deletedAssets: [] };
 
   const scenes = project.scenes.filter((item) => item.id !== sceneId);
-  const activeSceneId = project.activeSceneId === sceneId ? scenes[0]?.id || "" : project.activeSceneId;
+  const activeSceneId =
+    project.activeSceneId === sceneId ? scenes[0]?.id || "" : project.activeSceneId;
   const updatedProject = normalizeProjectMetadata({
     ...project,
     scenes,
@@ -360,35 +349,16 @@ export function summarizeProject(project: ProjectMetadata): ProjectSummary {
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     arUrl: project.arUrl,
-    viewUrl: project.viewUrl,
-    markerUrl: project.markerUrl
+    viewUrl: project.viewUrl
   };
 }
 
 function collectProjectAssetReferences(project: ProjectMetadata) {
-  return [
-    ...project.scenes.flatMap((scene) => collectSceneAssetReferences(scene)),
-    ...collectMarkerAssetReferences(project.marker)
-  ];
+  return project.scenes.flatMap((scene) => collectSceneAssetReferences(scene));
 }
 
 function collectSceneAssetReferences(scene: SceneMetadata) {
   return [scene.modelPathname, scene.modelUrl].filter(Boolean);
-}
-
-function collectMarkerAssetReferences(marker: MarkerSettings) {
-  return [
-    marker.imageUrl,
-    marker.boardImageUrl,
-    marker.patternUrl,
-    marker.trackingMarkerImageUrl,
-    marker.trackingMarkerPngUrl,
-    marker.trackingMarkerPatternUrl
-  ].filter((value) => {
-    if (!value) return false;
-    if (value === MARKER_IMAGE_URL || value === MARKER_PATTERN_URL) return false;
-    return true;
-  });
 }
 
 async function deleteUnreferencedBlobReferences(
@@ -423,7 +393,6 @@ function isDeletableBlobReference(value: string) {
   if (value.startsWith("/") || value.startsWith("data:")) return false;
   return (
     identity.startsWith("models/") ||
-    identity.startsWith("markers/") ||
     identity.startsWith("generated/") ||
     identity.startsWith("exports/")
   );
@@ -452,14 +421,7 @@ function dateValue(value: string) {
 export function normalizeProjectMetadata(project: LegacyProjectShape): ProjectMetadata {
   const id = project.id || "project";
   const urls = projectUrls(id);
-  const marker = normalizeMarker(
-    project.marker || {
-      styleId: "hiro",
-      imageUrl: project.placement?.markerImage || project.markerImage || MARKER_IMAGE_URL,
-      widthMm: project.placement?.markerWidthMm || project.markerWidthMm,
-      heightMm: project.placement?.markerHeightMm || project.markerHeightMm
-    }
-  );
+  const target = normalizeTarget(project.target as Partial<ImageTargetSettings> | null | undefined);
   const createdAt = project.createdAt || new Date().toISOString();
   const updatedAt = project.updatedAt || createdAt;
   const scenes = normalizeScenes(project, createdAt, updatedAt);
@@ -473,7 +435,7 @@ export function normalizeProjectMetadata(project: LegacyProjectShape): ProjectMe
     id,
     name: project.name || "Untitled project",
     schemaVersion: PROJECT_SCHEMA_VERSION,
-    marker,
+    target,
     activeSceneId,
     scenes,
     createdAt,
@@ -481,7 +443,6 @@ export function normalizeProjectMetadata(project: LegacyProjectShape): ProjectMe
     urls,
     arUrl: urls.arUrl,
     viewUrl: urls.viewUrl,
-    markerUrl: urls.markerUrl,
     editorUrl: urls.editorUrl,
     scale: placement.scale,
     verticalOffset: placement.position.z,
@@ -587,6 +548,7 @@ function normalizeScene(
     normalized.thumbnailUrl = scene.thumbnailUrl;
   }
 
+  normalized.placement = normalizePlacement(normalized.placement, computeDisplayedScale(normalized), 0);
   normalized.placement.scale = positiveNumber(
     scene.placement?.scale,
     computeDisplayedScale(normalized)

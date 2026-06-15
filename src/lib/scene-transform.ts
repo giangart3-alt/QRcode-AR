@@ -6,12 +6,15 @@ import {
   threeRotationRadiansToAppDegrees
 } from "@/lib/coordinates";
 import {
-  DEFAULT_MARKER_HEIGHT_MM,
-  DEFAULT_MARKER_WIDTH_MM,
-  mmToMeters
+  DEFAULT_TARGET_HEIGHT_MM,
+  DEFAULT_TARGET_WIDTH_MM,
+  degreesToRadians,
+  getImageTargetGeometry,
+  mmToMeters,
+  normalizeDegrees,
+  type ImageTargetSettings,
+  type PlacementMetadata
 } from "@/lib/placement";
-import type { PlacementMetadata } from "@/lib/placement";
-import type { MarkerSettings } from "@/lib/placement";
 import type { SceneMetadata } from "@/lib/projects";
 
 export type SceneRuntimeKind = "desktop" | "ar";
@@ -22,8 +25,9 @@ export type SceneScaleMetrics = {
   modelHeightM: number;
   baseFitScale: number;
   displayedScale: number;
-  markerWidthM: number;
-  markerHeightM: number;
+  runtimeScale: number;
+  targetWidthM: number;
+  targetHeightM: number;
   boundsValid: boolean;
   scaleFallbackReason?: string;
 };
@@ -41,20 +45,25 @@ const FIT_MARGIN = 0.9;
 
 export function computeBaseFitScaleFromObject(
   model: THREE.Object3D,
-  marker: Pick<MarkerSettings, "widthMm" | "heightMm">
+  target: Pick<ImageTargetSettings, "widthMm" | "heightMm">
 ) {
   const bounds = computeModelBounds(model);
-  const markerWidthM = Math.max(mmToMeters(positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM)), 0.001);
-  const markerHeightM = Math.max(mmToMeters(positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM)), 0.001);
+  const geometry = getImageTargetGeometry({
+    widthMm: positiveNumber(target.widthMm, DEFAULT_TARGET_WIDTH_MM),
+    heightMm: positiveNumber(target.heightMm, DEFAULT_TARGET_HEIGHT_MM)
+  });
 
   return {
     modelWidthM: bounds.widthM,
     modelDepthM: bounds.depthM,
     modelHeightM: bounds.heightM,
-    markerWidthM,
-    markerHeightM,
+    targetWidthM: Math.max(geometry.widthM, 0.001),
+    targetHeightM: Math.max(geometry.heightM, 0.001),
     boundsValid: bounds.valid,
-    baseFitScale: Math.min(markerWidthM / bounds.widthM, markerHeightM / bounds.depthM) * FIT_MARGIN
+    baseFitScale: Math.min(
+      geometry.widthM / bounds.widthM,
+      geometry.heightM / bounds.depthM
+    ) * FIT_MARGIN
   };
 }
 
@@ -68,27 +77,36 @@ export function computeSceneDisplayScale(scene: SceneMetadata, baseFitScale: num
 export function computeSceneTransformForRuntime(
   model: THREE.Object3D,
   scene: SceneMetadata,
-  marker: Pick<MarkerSettings, "widthMm" | "heightMm">,
+  target: Pick<ImageTargetSettings, "widthMm" | "heightMm">,
   runtime: SceneRuntimeKind = "desktop"
 ): SceneRuntimeTransform {
-  const fit = computeBaseFitScaleFromObject(model, marker);
+  const fit = computeBaseFitScaleFromObject(model, target);
   const computedScale = computeSceneDisplayScale(scene, fit.baseFitScale);
   const scaleFallbackReason =
     Number.isFinite(computedScale) && computedScale > 0
       ? undefined
       : "Saved scale was invalid; fit scale fallback applied.";
-  const scale = positiveNumber(computedScale, positiveNumber(fit.baseFitScale, 1));
+  const displayedScale = positiveNumber(computedScale, positiveNumber(fit.baseFitScale, 1));
   const appPlacement = safePlacement(scene.placement);
+  const targetWidthM = Math.max(fit.targetWidthM, 0.001);
+  const runtimeScale = runtime === "ar" ? displayedScale / targetWidthM : displayedScale;
 
   return {
     runtime,
-    position: appPositionMmToThreeMeters(appPlacement.position),
-    rotation: appRotationDegreesToThreeRadians(appPlacement.rotation),
-    scale,
+    position:
+      runtime === "ar"
+        ? appPositionMmToMindArUnits(appPlacement.position, targetWidthM)
+        : appPositionMmToThreeMeters(appPlacement.position),
+    rotation:
+      runtime === "ar"
+        ? appRotationDegreesToMindArRadians(appPlacement.rotation)
+        : appRotationDegreesToThreeRadians(appPlacement.rotation),
+    scale: runtimeScale,
     appPlacement,
     metrics: {
       ...fit,
-      displayedScale: scale,
+      displayedScale,
+      runtimeScale,
       scaleFallbackReason
     }
   };
@@ -101,19 +119,6 @@ export function applyRuntimeSceneTransform(
   model.position.copy(transform.position);
   model.rotation.copy(transform.rotation);
   model.scale.setScalar(transform.scale);
-  model.updateMatrixWorld(true);
-}
-
-export function applySceneTransform(
-  model: THREE.Object3D,
-  scene: SceneMetadata,
-  displayedScale: number
-) {
-  const appPlacement = safePlacement(scene.placement);
-
-  model.position.copy(appPositionMmToThreeMeters(appPlacement.position));
-  model.rotation.copy(appRotationDegreesToThreeRadians(appPlacement.rotation));
-  model.scale.setScalar(positiveNumber(displayedScale, 1));
   model.updateMatrixWorld(true);
 }
 
@@ -133,7 +138,7 @@ export function sceneTransformFromObject(
     placement: {
       ...scene.placement,
       position: roundVector(threePositionMetersToAppMm(model.position)),
-      rotation: roundVector(threeRotationRadiansToAppDegrees(model.rotation)),
+      rotation: normalizeRotationVector(roundVector(threeRotationRadiansToAppDegrees(model.rotation))),
       scale: roundForStorage(displayedScale)
     }
   } satisfies SceneMetadata;
@@ -154,7 +159,7 @@ export function withDisplayedScale(
   } satisfies SceneMetadata;
 }
 
-export function fitModelToMarker(scene: SceneMetadata) {
+export function fitModelToTarget(scene: SceneMetadata) {
   return {
     ...scene,
     scaleMode: "fit" as const,
@@ -166,11 +171,38 @@ export function roundForStorage(value: number) {
   return Math.round(value * 1000) / 1000;
 }
 
+function appPositionMmToMindArUnits(
+  position: PlacementMetadata["position"],
+  targetWidthM: number
+) {
+  return new THREE.Vector3(
+    mmToMeters(position.x) / targetWidthM,
+    mmToMeters(position.y) / targetWidthM,
+    mmToMeters(position.z) / targetWidthM
+  );
+}
+
+function appRotationDegreesToMindArRadians(rotation: PlacementMetadata["rotation"]) {
+  return new THREE.Euler(
+    degreesToRadians(rotation.x),
+    degreesToRadians(rotation.y),
+    degreesToRadians(rotation.z)
+  );
+}
+
 function roundVector<T extends { x: number; y: number; z: number }>(vector: T) {
   return {
     x: roundForStorage(vector.x),
     y: roundForStorage(vector.y),
     z: roundForStorage(vector.z)
+  };
+}
+
+function normalizeRotationVector<T extends { x: number; y: number; z: number }>(vector: T) {
+  return {
+    x: roundForStorage(normalizeDegrees(vector.x)),
+    y: roundForStorage(normalizeDegrees(vector.y)),
+    z: roundForStorage(normalizeDegrees(vector.z))
   };
 }
 
@@ -217,7 +249,7 @@ function safePlacement(placement: PlacementMetadata): PlacementMetadata {
   return {
     ...placement,
     position: safeVector(placement.position),
-    rotation: safeVector(placement.rotation),
+    rotation: normalizeRotationVector(safeVector(placement.rotation)),
     scale: positiveNumber(placement.scale, 1)
   };
 }

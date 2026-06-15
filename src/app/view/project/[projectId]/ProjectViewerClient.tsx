@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
 import { SceneThreeViewport } from "@/components/SceneThreeViewport";
-import { createMarkerSettings } from "@/lib/placement";
+import { createDefaultTarget } from "@/lib/placement";
 import type { ProjectMetadata } from "@/lib/projects";
 import type { SceneScaleMetrics } from "@/lib/scene-transform";
 
@@ -84,7 +84,7 @@ export function ProjectViewerClient({ projectId }: { projectId: string }) {
       <div className="grid min-h-[calc(100vh-4rem)] lg:h-[calc(100vh-4rem)] lg:grid-cols-[minmax(0,1fr)_320px]">
         <SceneThreeViewport
           scene={activeScene}
-          marker={project?.marker || defaultMarkerForRender()}
+          target={project?.target || createDefaultTarget()}
           className="min-h-[60vh] lg:h-full"
           onStatusChange={setStatus}
           onMetricsChange={setMetrics}
@@ -102,13 +102,9 @@ export function ProjectViewerClient({ projectId }: { projectId: string }) {
               <p className="text-xs font-bold uppercase tracking-[0.16em] text-[var(--soft)]">Read-only project viewer</p>
               <h2 className="mt-3 text-3xl font-black">{activeScene?.name || "No active scene"}</h2>
               <div className="mt-5 grid gap-3 text-sm">
-                <Info label="Marker" value={`${project.marker.widthMm} x ${project.marker.heightMm} mm`} />
-                <Info label="Scale mode" value={activeScene?.scaleMode || "None"} />
-                {activeScene?.scaleMode === "architectural" ? (
-                  <Info label="Architectural scale" value={`1:${activeScene.architecturalScale}`} />
-                ) : (
-                  <Info label="Normalized fit scale" value={activeScene ? String(activeScene.normalizedScale) : "None"} />
-                )}
+                <Info label="Image target" value={`${project.target.widthMm} x ${project.target.heightMm} mm`} />
+                <Info label="Scale mode" value="Target fit" />
+                <Info label="Normalized fit scale" value={activeScene ? String(activeScene.normalizedScale) : "None"} />
                 {metrics ? (
                   <>
                     <Info label="Model footprint" value={`${formatNumber(metrics.modelWidthM)}m x ${formatNumber(metrics.modelDepthM)}m`} />
@@ -131,10 +127,6 @@ function Info({ label, value }: { label: string; value: string }) {
       <dd className="mt-1 break-words font-semibold text-white">{value}</dd>
     </div>
   );
-}
-
-function defaultMarkerForRender() {
-  return createMarkerSettings();
 }
 
 function formatNumber(value: number) {

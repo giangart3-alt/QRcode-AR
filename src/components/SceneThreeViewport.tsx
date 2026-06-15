@@ -5,12 +5,10 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { APP_AXIS_COLORS } from "@/lib/coordinates";
-import type { MarkerSettings } from "@/lib/placement";
 import {
-  getMarkerBoardGeometry,
-  getMarkerBoardImageUrl,
-  markerBoardImageDataUrlForStyle,
-  mmToMeters
+  correctionRotationRadians,
+  getImageTargetGeometry,
+  type ImageTargetSettings
 } from "@/lib/placement";
 import {
   applyRuntimeSceneTransform,
@@ -25,7 +23,7 @@ export type TransformMode = "translate" | "rotate" | "scale";
 
 type SceneThreeViewportProps = {
   scene: SceneMetadata | null;
-  marker: MarkerSettings;
+  target: ImageTargetSettings;
   editable?: boolean;
   transformMode?: TransformMode;
   className?: string;
@@ -36,7 +34,7 @@ type SceneThreeViewportProps = {
 
 export function SceneThreeViewport({
   scene,
-  marker,
+  target,
   editable = false,
   transformMode = "translate",
   className = "",
@@ -46,26 +44,28 @@ export function SceneThreeViewport({
 }: SceneThreeViewportProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const modelRef = useRef<THREE.Object3D | null>(null);
+  const fitObjectRef = useRef<THREE.Object3D | null>(null);
+  const transformObjectRef = useRef<THREE.Object3D | null>(null);
   const transformRef = useRef<TransformControls | null>(null);
   const sceneRef = useRef<SceneMetadata | null>(scene);
   const baseFitScaleRef = useRef(1);
-  const modelDimensionsRef = useRef({ modelWidthM: 0, modelDepthM: 0, modelHeightM: 0 });
 
   const applyCurrentScene = useCallback(() => {
-    const model = modelRef.current;
+    const fitObject = fitObjectRef.current;
+    const transformObject = transformObjectRef.current;
     const currentScene = sceneRef.current;
-    if (!model || !currentScene) return;
+    if (!fitObject || !transformObject || !currentScene) return;
 
-    const runtimeTransform = computeSceneTransformForRuntime(model, currentScene, marker, "desktop");
-    applyRuntimeSceneTransform(model, runtimeTransform);
+    transformObject.position.set(0, 0, 0);
+    transformObject.rotation.set(0, 0, 0);
+    transformObject.scale.set(1, 1, 1);
+    transformObject.updateMatrixWorld(true);
+
+    const runtimeTransform = computeSceneTransformForRuntime(fitObject, currentScene, target, "desktop");
+    applyRuntimeSceneTransform(transformObject, runtimeTransform);
     baseFitScaleRef.current = runtimeTransform.metrics.baseFitScale;
-    modelDimensionsRef.current = {
-      modelWidthM: runtimeTransform.metrics.modelWidthM,
-      modelDepthM: runtimeTransform.metrics.modelDepthM,
-      modelHeightM: runtimeTransform.metrics.modelHeightM
-    };
     onMetricsChange?.(runtimeTransform.metrics);
-  }, [marker, onMetricsChange]);
+  }, [target, onMetricsChange]);
 
   useEffect(() => {
     sceneRef.current = scene;
@@ -83,9 +83,8 @@ export function SceneThreeViewport({
     let stopped = false;
     let animationFrame = 0;
     const activeScene = sceneRef.current;
-    const markerWidthM = mmToMeters(marker.widthMm);
-    const markerHeightM = mmToMeters(marker.heightMm);
-    const maxMarkerMeters = Math.max(markerWidthM, markerHeightM);
+    const targetGeometry = getImageTargetGeometry(target);
+    const maxTargetMeters = Math.max(targetGeometry.widthM, targetGeometry.heightM);
 
     onMetricsChange?.(null);
     onStatusChange?.(activeScene?.modelUrl ? "Loading 3D scene..." : "Ready for a GLB scene.");
@@ -101,7 +100,11 @@ export function SceneThreeViewport({
     threeScene.background = new THREE.Color(0xf6f7f9);
 
     const camera = new THREE.PerspectiveCamera(48, 1, 0.01, 1000);
-    camera.position.set(0.35, Math.max(maxMarkerMeters * 0.75, 0.75), Math.max(maxMarkerMeters * 0.95, 0.95));
+    camera.position.set(
+      targetGeometry.widthM * 0.45,
+      Math.max(maxTargetMeters * 0.75, 0.75),
+      Math.max(maxTargetMeters * 0.95, 0.95)
+    );
     camera.lookAt(0, 0, 0);
 
     const orbit = new OrbitControls(camera, renderer.domElement);
@@ -114,75 +117,55 @@ export function SceneThreeViewport({
     directional.position.set(2, 4, 3);
     threeScene.add(directional);
 
-    const boardImageUrl = getMarkerBoardImageUrl(marker);
-    const fallbackBoardImageUrl = markerBoardImageDataUrlForStyle(
-      "hiro",
-      marker.widthMm,
-      marker.heightMm,
-      marker.trackingMarkerSizeOnBoardMm,
-      marker.trackingMarkerPositionOnBoard
-    );
-    const fallbackTexture = createFallbackBoardTexture(marker);
-    let boardTexture: THREE.Texture = fallbackTexture;
-    const boardMaterial = new THREE.MeshBasicMaterial({
-      map: boardTexture,
+    const targetTexture = createFallbackTargetTexture();
+    const targetMaterial = new THREE.MeshBasicMaterial({
+      map: targetTexture,
       color: 0xffffff,
       side: THREE.DoubleSide
     });
     const textureLoader = new THREE.TextureLoader();
     textureLoader.setCrossOrigin("anonymous");
 
-    const applyBoardTexture = (nextTexture: THREE.Texture) => {
+    const applyTargetTexture = (nextTexture: THREE.Texture) => {
       nextTexture.colorSpace = THREE.SRGBColorSpace;
+      nextTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
       nextTexture.needsUpdate = true;
       if (stopped) {
         nextTexture.dispose();
         return;
       }
 
-      boardTexture.dispose();
-      boardTexture = nextTexture;
-      boardMaterial.map = nextTexture;
-      boardMaterial.needsUpdate = true;
-    };
-
-    const loadFallbackBoardTexture = () => {
-      textureLoader.load(
-        fallbackBoardImageUrl,
-        applyBoardTexture,
-        undefined,
-        (fallbackError) => {
-          console.error("Unable to load fallback board texture.", fallbackError);
-        }
-      );
+      targetTexture.dispose();
+      targetMaterial.map = nextTexture;
+      targetMaterial.needsUpdate = true;
     };
 
     textureLoader.load(
-      boardImageUrl,
-      applyBoardTexture,
+      target.previewUrl || target.imageUrl,
+      applyTargetTexture,
       undefined,
       (textureError) => {
-        console.error("Unable to load board texture. Falling back to technical grid.", textureError);
-        loadFallbackBoardTexture();
+        console.error("Unable to load image target texture.", textureError);
       }
     );
-    const markerPlane = new THREE.Mesh(
+
+    const targetPlane = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
-      boardMaterial
+      targetMaterial
     );
-    markerPlane.rotation.x = -Math.PI / 2;
-    markerPlane.scale.set(markerWidthM, markerHeightM, 1);
-    threeScene.add(markerPlane);
+    targetPlane.rotation.x = -Math.PI / 2;
+    targetPlane.scale.set(targetGeometry.widthM, targetGeometry.heightM, 1);
+    threeScene.add(targetPlane);
 
     const border = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.PlaneGeometry(1, 1)),
       new THREE.LineBasicMaterial({ color: 0x1c1917 })
     );
-    border.scale.set(markerWidthM, markerHeightM, 1);
+    border.scale.set(targetGeometry.widthM, targetGeometry.heightM, 1);
     border.rotation.x = -Math.PI / 2;
     threeScene.add(border);
 
-    const axes = createAppAxesHelper(Math.min(maxMarkerMeters * 0.28, 0.3));
+    const axes = createAppAxesHelper(Math.min(maxTargetMeters * 0.18, 0.35));
     axes.position.set(0, 0.01, 0);
     threeScene.add(axes);
 
@@ -202,17 +185,19 @@ export function SceneThreeViewport({
         orbit.enabled = !(event as { value?: boolean }).value;
       });
       transform.addEventListener("objectChange", () => {
-        const model = modelRef.current;
+        const transformObject = transformObjectRef.current;
         const currentScene = sceneRef.current;
-        if (!model || !currentScene) return;
+        if (!transformObject || !currentScene) return;
 
         const uniformScale =
-          (Math.abs(model.scale.x) + Math.abs(model.scale.y) + Math.abs(model.scale.z)) / 3;
+          (Math.abs(transformObject.scale.x) +
+            Math.abs(transformObject.scale.y) +
+            Math.abs(transformObject.scale.z)) / 3;
         if (Number.isFinite(uniformScale) && uniformScale > 0) {
-          model.scale.setScalar(uniformScale);
+          transformObject.scale.setScalar(uniformScale);
         }
 
-        onSceneChange?.(sceneTransformFromObject(currentScene, model, baseFitScaleRef.current));
+        onSceneChange?.(sceneTransformFromObject(currentScene, transformObject, baseFitScaleRef.current));
       });
 
       const setSnap = (enabled: boolean) => {
@@ -253,23 +238,28 @@ export function SceneThreeViewport({
           }
         });
 
-        threeScene.add(model);
+        const desktopViewportTransformGroup = new THREE.Group();
+        const modelCorrectionGroup = new THREE.Group();
+        const correction = correctionRotationRadians(target.correctionMode);
+        modelCorrectionGroup.rotation.set(correction.x, correction.y, correction.z);
+        desktopViewportTransformGroup.add(modelCorrectionGroup);
+        modelCorrectionGroup.add(model);
+        threeScene.add(desktopViewportTransformGroup);
+
         modelRef.current = model;
+        fitObjectRef.current = modelCorrectionGroup;
+        transformObjectRef.current = desktopViewportTransformGroup;
+        desktopViewportTransformGroup.updateMatrixWorld(true);
         const runtimeTransform = computeSceneTransformForRuntime(
-          model,
+          modelCorrectionGroup,
           sceneRef.current || activeScene,
-          marker,
+          target,
           "desktop"
         );
-        applyRuntimeSceneTransform(model, runtimeTransform);
+        applyRuntimeSceneTransform(desktopViewportTransformGroup, runtimeTransform);
         baseFitScaleRef.current = runtimeTransform.metrics.baseFitScale;
-        modelDimensionsRef.current = {
-          modelWidthM: runtimeTransform.metrics.modelWidthM,
-          modelDepthM: runtimeTransform.metrics.modelDepthM,
-          modelHeightM: runtimeTransform.metrics.modelHeightM
-        };
         onMetricsChange?.(runtimeTransform.metrics);
-        transform?.attach(model);
+        transform?.attach(desktopViewportTransformGroup);
         onStatusChange?.("Scene loaded.");
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : "Unable to load GLB model.";
@@ -307,27 +297,27 @@ export function SceneThreeViewport({
       cleanupTransformKeyboard?.();
       transformHelper?.dispose();
       orbit.dispose();
-      boardTexture.dispose();
-      markerPlane.geometry.dispose();
-      disposeMaterial(markerPlane.material);
+      disposeTexture(targetMaterial.map);
+      targetPlane.geometry.dispose();
+      disposeMaterial(targetPlane.material);
       border.geometry.dispose();
       disposeMaterial(border.material);
       disposeObject(axes);
       renderer.dispose();
       renderer.domElement.remove();
       modelRef.current = null;
+      fitObjectRef.current = null;
+      transformObjectRef.current = null;
       transformRef.current = null;
     };
   }, [
     editable,
-    marker,
-    marker.heightMm,
-    marker.boardImageUrl,
-    marker.boardStyle,
-    marker.imageUrl,
-    marker.trackingMarkerPositionOnBoard,
-    marker.trackingMarkerSizeOnBoardMm,
-    marker.widthMm,
+    target,
+    target.heightMm,
+    target.imageUrl,
+    target.previewUrl,
+    target.correctionMode,
+    target.widthMm,
     onMetricsChange,
     onSceneChange,
     onStatusChange,
@@ -392,6 +382,29 @@ function createAxisLine(start: THREE.Vector3, end: THREE.Vector3, color: string)
   return new THREE.Line(geometry, material);
 }
 
+function createFallbackTargetTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1024;
+  canvas.height = 768;
+  const context = canvas.getContext("2d");
+
+  if (context) {
+    context.fillStyle = "#f8fafc";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.strokeStyle = "#94a3b8";
+    context.lineWidth = 4;
+    context.strokeRect(16, 16, canvas.width - 32, canvas.height - 32);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function disposeTexture(texture: THREE.Texture | null) {
+  texture?.dispose();
+}
+
 function disposeMaterial(material: THREE.Material | THREE.Material[]) {
   if (Array.isArray(material)) {
     material.forEach((item) => item.dispose());
@@ -408,71 +421,4 @@ function disposeObject(object: THREE.Object3D) {
       disposeMaterial(child.material);
     }
   });
-}
-
-function createFallbackBoardTexture(marker: MarkerSettings) {
-  const geometry = getMarkerBoardGeometry(marker);
-  const widthMm = geometry.widthMm;
-  const heightMm = geometry.heightMm;
-  const width = 1024;
-  const height = Math.max(512, Math.round(width * (heightMm / Math.max(widthMm, 1))));
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d");
-
-  if (context) {
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, width, height);
-    context.strokeStyle = "#111827";
-    context.lineWidth = 14;
-    context.strokeRect(20, 20, width - 40, height - 40);
-    context.strokeStyle = "#cbd5e1";
-    context.lineWidth = 2;
-
-    for (let index = 1; index < 10; index += 1) {
-      const x = (width * index) / 10;
-      context.beginPath();
-      context.moveTo(x, 24);
-      context.lineTo(x, height - 24);
-      context.stroke();
-    }
-
-    for (let index = 1; index < 8; index += 1) {
-      const y = (height * index) / 8;
-      context.beginPath();
-      context.moveTo(24, y);
-      context.lineTo(width - 24, y);
-      context.stroke();
-    }
-
-    const scale = width / widthMm;
-    const markerSize = geometry.trackingMarkerRectMm.sizeMm * scale;
-    const markerX = geometry.trackingMarkerRectMm.xMm * scale;
-    const markerY = geometry.trackingMarkerRectMm.yMm * scale;
-    drawFallbackTracker(context, markerX, markerY, markerSize);
-  }
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
-
-function drawFallbackTracker(
-  context: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  size: number
-) {
-  const scale = size / 256;
-  context.fillStyle = "#000000";
-  context.fillRect(x, y, size, size);
-  context.fillStyle = "#ffffff";
-  context.fillRect(x + 32 * scale, y + 32 * scale, 192 * scale, 192 * scale);
-  context.fillStyle = "#000000";
-  context.fillRect(x + 52 * scale, y + 52 * scale, 58 * scale, 58 * scale);
-  context.fillRect(x + 136 * scale, y + 52 * scale, 68 * scale, 34 * scale);
-  context.fillRect(x + 148 * scale, y + 86 * scale, 34 * scale, 94 * scale);
-  context.fillRect(x + 72 * scale, y + 144 * scale, 96 * scale, 34 * scale);
-  context.fillRect(x + 184 * scale, y + 164 * scale, 24 * scale, 44 * scale);
 }

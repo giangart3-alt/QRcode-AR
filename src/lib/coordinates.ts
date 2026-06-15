@@ -10,7 +10,7 @@ export const APP_AXIS_COLORS: Record<AppAxis, string> = {
   z: "#3b82f6"
 };
 
-// The app is Z-up: X is left/right, Y is forward/back on the marker, Z is height.
+// The app is Z-up: X is horizontal on the image, Y is vertical on the image, Z is height.
 // Three.js remains Y-up internally, so app Y maps to Three Z and app Z maps to Three Y.
 export function appPositionMmToThreeMeters(position: PlacementMetadata["position"]) {
   return new THREE.Vector3(

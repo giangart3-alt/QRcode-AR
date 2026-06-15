@@ -26,8 +26,6 @@ export function AdminClient() {
   const [password, setPassword] = useState("");
   const [unlocked, setUnlocked] = useState(false);
   const [name, setName] = useState("");
-  const [scale, setScale] = useState("1");
-  const [verticalOffset, setVerticalOffset] = useState("0");
   const [file, setFile] = useState<File | null>(null);
   const [progress, setProgress] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -91,15 +89,6 @@ export function AdminClient() {
         throw new Error("Choose a GLB file that is 500 MB or smaller.");
       }
 
-      const parsedScale = parseDecimalInput(scale, "Scale");
-      if (parsedScale.value <= 0) {
-        throw new Error("Scale must be greater than 0.");
-      }
-
-      const parsedVerticalOffset = parseDecimalInput(verticalOffset, "Vertical offset");
-      setScale(parsedScale.normalized);
-      setVerticalOffset(parsedVerticalOffset.normalized);
-
       const pendingName = name.trim() || file.name.replace(/\.glb$/i, "");
       const pathname = `models/${crypto.randomUUID()}.glb`;
       const multipart = file.size >= MULTIPART_THRESHOLD_BYTES;
@@ -136,8 +125,8 @@ export function AdminClient() {
         body: JSON.stringify({
           password,
           name: pendingName,
-          scale: parsedScale.value,
-          verticalOffset: parsedVerticalOffset.value,
+          scale: 1,
+          verticalOffset: 0,
           modelUrl: blob.url,
           modelPathname: blob.pathname,
           modelSize: file.size
@@ -178,15 +167,11 @@ export function AdminClient() {
               Dashboard
             </Link>
           </div>
-          <Link className="focus-ring rounded-lg px-3 py-2 text-sm font-semibold text-[var(--muted)] transition hover:bg-white hover:text-[var(--ink)]" href="/marker">
-            Marker
-          </Link>
         </div>
 
         <h1 className="text-4xl font-black tracking-tight text-[var(--ink)]">Admin</h1>
         <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--muted)]">
-          Upload one GLB at a time. The file goes straight from this browser to Vercel Blob;
-          the app only saves a small JSON project record after upload finishes.
+          Upload one GLB at a time. The mobile AR page tracks the masterplan image target.
         </p>
 
         {!unlocked ? (
@@ -213,7 +198,7 @@ export function AdminClient() {
         ) : (
           <div className="mt-8 grid gap-6 lg:grid-cols-[1fr_380px]">
             <form noValidate onSubmit={createProject} className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-5 shadow-sm">
-              <div className="grid gap-5 md:grid-cols-2">
+              <div className="grid gap-5">
                 <label className="block text-sm font-semibold md:col-span-2">
                   Project/model name
                   <input
@@ -221,26 +206,6 @@ export function AdminClient() {
                     onChange={(event) => setName(event.target.value)}
                     className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
                     placeholder="Gallery sculpture"
-                  />
-                </label>
-                <label className="block text-sm font-semibold">
-                  Scale
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={scale}
-                    onChange={(event) => setScale(event.target.value)}
-                    className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
-                  />
-                </label>
-                <label className="block text-sm font-semibold">
-                  Vertical offset
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={verticalOffset}
-                    onChange={(event) => setVerticalOffset(event.target.value)}
-                    className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-[var(--ink)] shadow-inner"
                   />
                 </label>
                 <label className="block text-sm font-semibold md:col-span-2">
@@ -400,25 +365,6 @@ async function readJson<T>(response: Response) {
   } catch {
     return null;
   }
-}
-
-function parseDecimalInput(rawValue: string, label: string) {
-  const normalized = rawValue.trim().replace(",", ".");
-
-  if (!normalized) {
-    throw new Error(`${label} is required.`);
-  }
-
-  const value = Number(normalized);
-
-  if (!Number.isFinite(value)) {
-    throw new Error(`${label} must be a valid number. Use 1.5 or 1,5.`);
-  }
-
-  return {
-    value,
-    normalized
-  };
 }
 
 function getGlbContentType(fileType: string) {

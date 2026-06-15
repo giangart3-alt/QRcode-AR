@@ -8,7 +8,7 @@ export default function Home() {
           QRcode AR
         </h1>
         <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-[var(--muted)]">
-          A focused editor for persistent GLB scenes, project QR codes, and AR marker exports.
+          A focused editor for persistent GLB scenes, project QR codes, and image-target AR.
         </p>
         <div className="mt-8 flex justify-center">
           <Link

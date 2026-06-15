@@ -1,4 +1,4 @@
-import { EditorClient } from "./EditorClient";
+import { redirect } from "next/navigation";
 
 export default async function EditorPage({
   params
@@ -6,5 +6,5 @@ export default async function EditorPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  return <EditorClient id={id} />;
+  redirect(`/admin/project/${id}`);
 }

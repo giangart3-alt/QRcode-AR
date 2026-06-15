@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { readAdminPassword, validateAdminPassword } from "@/lib/admin-auth";
-import { normalizeMarker, normalizePlacement } from "@/lib/placement";
+import { normalizePlacement, normalizeTarget } from "@/lib/placement";
 import {
   BlobConfigurationError,
   computeDisplayedScale,
@@ -45,7 +45,7 @@ export async function PUT(
     const body = (await request.json()) as {
       password?: string;
       name?: string;
-      marker?: unknown;
+      target?: unknown;
       scenes?: SceneMetadata[];
       activeSceneId?: string;
     };
@@ -63,7 +63,7 @@ export async function PUT(
     const updatedProject = normalizeProjectMetadata({
       ...project,
       name: body.name?.trim() || project.name,
-      marker: body.marker ? normalizeMarker(body.marker) : project.marker,
+      target: body.target ? normalizeTarget(body.target) : project.target,
       scenes: Array.isArray(body.scenes)
         ? body.scenes.map((scene) => normalizeSceneForSave(scene))
         : project.scenes,

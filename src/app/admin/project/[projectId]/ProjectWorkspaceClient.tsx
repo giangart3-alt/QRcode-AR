@@ -7,13 +7,15 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { SceneThreeViewport, type TransformMode } from "@/components/SceneThreeViewport";
 import { APP_AXIS_COLORS, type AppAxis } from "@/lib/coordinates";
 import {
-  HIRO_MARKER_IMAGE_URL,
-  createDefaultMarker,
+  MODEL_CORRECTION_MODES,
   createDefaultPlacement,
-  getMarkerBoardGeometry,
-  type MarkerSettings
+  createDefaultTarget,
+  getImageTargetGeometry,
+  normalizeDegrees,
+  type ImageTargetSettings,
+  type ModelCorrectionMode
 } from "@/lib/placement";
-import { fitModelToMarker, roundForStorage, type SceneScaleMetrics } from "@/lib/scene-transform";
+import { fitModelToTarget, roundForStorage, type SceneScaleMetrics } from "@/lib/scene-transform";
 import type { ProjectMetadata, SceneMetadata } from "@/lib/projects";
 
 type UploadProgress = {
@@ -45,7 +47,6 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
   const [metrics, setMetrics] = useState<SceneScaleMetrics | null>(null);
   const [qrOpen, setQrOpen] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState("");
-  const [markerOpen, setMarkerOpen] = useState(false);
   const [scenesOpen, setScenesOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [status, setStatus] = useState("Loading project...");
@@ -67,6 +68,12 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
   }, [project, selectedSceneId]);
   const working = busy || uploadStage !== "idle";
   const canOpenQr = saveState === "saved" && !working;
+  const saveStateLabel = {
+    saved: "Saved",
+    dirty: "Unsaved changes",
+    saving: "Saving...",
+    error: "Save error"
+  }[saveState];
 
   useEffect(() => {
     let cancelled = false;
@@ -111,14 +118,6 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     setStatus(nextStatus);
   }, []);
 
-  const handleViewportStatus = useCallback((nextStatus: string) => {
-    setStatus(nextStatus);
-  }, []);
-
-  const handleMetricsChange = useCallback((nextMetrics: SceneScaleMetrics | null) => {
-    setMetrics(nextMetrics);
-  }, []);
-
   const handleSceneTransformChange = useCallback((nextScene: SceneMetadata) => {
     setProject((current) =>
       current ? updateSceneInProject(current, nextScene.id, () => nextScene) : current
@@ -139,7 +138,8 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
             id: project.id,
             name: project.name,
             arUrl: project.arUrl,
-            activeSceneId: project.activeSceneId
+            activeSceneId: project.activeSceneId,
+            target: project.target
           }
         : null,
       selectedScene: selectedScene
@@ -150,22 +150,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
             modelPathname: selectedScene.modelPathname,
             placement: selectedScene.placement,
             normalizedScale: selectedScene.normalizedScale,
-            scaleMode: selectedScene.scaleMode,
-            architecturalScale: selectedScene.architecturalScale
-          }
-        : null,
-      marker: project
-        ? {
-            widthMm: project.marker.widthMm,
-            heightMm: project.marker.heightMm,
-            imageUrl: project.marker.imageUrl,
-            boardImageUrl: project.marker.boardImageUrl,
-            patternUrl: project.marker.patternUrl,
-            trackingMarkerId: project.marker.trackingMarkerId,
-            trackingMarkerImageUrl: project.marker.trackingMarkerImageUrl,
-            trackingMarkerPatternUrl: project.marker.trackingMarkerPatternUrl,
-            trackingMarkerSizeOnBoardMm: project.marker.trackingMarkerSizeOnBoardMm,
-            geometry: getMarkerBoardGeometry(project.marker)
+            scaleMode: selectedScene.scaleMode
           }
         : null,
       metrics
@@ -196,7 +181,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
         body: JSON.stringify({
           password,
           name: nextProject.name,
-          marker: nextProject.marker,
+          target: nextProject.target,
           scenes: nextProject.scenes,
           activeSceneId: nextProject.activeSceneId
         })
@@ -306,9 +291,9 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
         modelUrl: blob.url,
         modelPathname: blob.pathname,
         modelSize: replaceFile.size,
-        scaleMode: scene.scaleMode || "fit",
+        scaleMode: "fit",
         normalizedScale: scene.normalizedScale || 1,
-        architecturalScale: scene.architecturalScale || 100,
+        architecturalScale: 100,
         placement: scene.placement || createDefaultPlacement(1, 0)
       }));
 
@@ -376,10 +361,6 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     await ensureQrDataUrl();
   }
 
-  async function openMarkerModal() {
-    setMarkerOpen(true);
-  }
-
   async function ensureQrDataUrl() {
     if (!project || qrDataUrl) return;
 
@@ -438,13 +419,6 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     }
   }
 
-  async function saveMarkerSettings(closeAfterSave = false) {
-    const saved = await saveProject(project, "Marker settings saved.");
-    if (saved && closeAfterSave) {
-      setMarkerOpen(false);
-    }
-  }
-
   function updateProjectName(name: string) {
     setProject((current) => (current ? { ...current, name } : current));
     markDirty("Project name changed.");
@@ -453,6 +427,41 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
   function updateScene(sceneId: string, updater: (scene: SceneMetadata) => SceneMetadata) {
     setProject((current) => (current ? updateSceneInProject(current, sceneId, updater) : current));
     markDirty("Scene has unsaved changes.");
+  }
+
+  function updateTarget(updater: (target: ImageTargetSettings) => ImageTargetSettings) {
+    setProject((current) =>
+      current ? { ...current, target: updater(current.target || createDefaultTarget()) } : current
+    );
+    markDirty("Target settings changed.");
+  }
+
+  function updateTargetWidth(value: string) {
+    const parsed = parsePositiveDecimal(value, project?.target.widthMm || createDefaultTarget().widthMm);
+    updateTarget((target) => {
+      const aspect = getImageTargetGeometry(target).normalizedHeight;
+      return {
+        ...target,
+        widthMm: parsed,
+        heightMm: roundForStorage(parsed * aspect)
+      };
+    });
+  }
+
+  function updateTargetHeight(value: string) {
+    const parsed = parsePositiveDecimal(value, project?.target.heightMm || createDefaultTarget().heightMm);
+    updateTarget((target) => {
+      const aspect = getImageTargetGeometry(target).normalizedHeight;
+      return {
+        ...target,
+        widthMm: roundForStorage(parsed / aspect),
+        heightMm: parsed
+      };
+    });
+  }
+
+  function updateCorrectionMode(mode: ModelCorrectionMode) {
+    updateTarget((target) => ({ ...target, correctionMode: mode }));
   }
 
   function updateSceneNumber(
@@ -478,7 +487,10 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
         ...scene.placement,
         [group]: {
           ...scene.placement[group],
-          [field]: parseDecimal(value, scene.placement[group][field])
+          [field]:
+            group === "rotation"
+              ? normalizeDegrees(parseDecimal(value, scene.placement[group][field]))
+              : parseDecimal(value, scene.placement[group][field])
         }
       }
     }));
@@ -511,18 +523,11 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
         ...scene.placement,
         rotation: {
           ...scene.placement.rotation,
-          [axis]: roundForStorage(scene.placement.rotation[axis] + 90)
+          [axis]: roundForStorage(normalizeDegrees(scene.placement.rotation[axis] + 90))
         }
       }
     }));
   }
-
-  const saveStateLabel = {
-    saved: "Saved",
-    dirty: "Unsaved changes",
-    saving: "Saving...",
-    error: "Save error"
-  }[saveState];
 
   return (
     <main className="h-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
@@ -543,9 +548,6 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
         {project ? (
           <div className="relative flex shrink-0 flex-wrap items-center justify-end gap-2">
-            <button type="button" className="button-compact" onClick={openMarkerModal}>
-              Marker
-            </button>
             <button
               type="button"
               className="button-compact"
@@ -572,7 +574,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
                   <p className="text-sm font-semibold text-[var(--muted)]">Generating QR...</p>
                 )}
                 <p className="mt-3 text-center text-xs font-semibold text-[var(--muted)]">
-                  Scan this after saving. It opens the latest saved project on mobile.
+                  Scan this after saving. It opens the latest saved mobile AR page.
                 </p>
               </div>
             ) : null}
@@ -601,102 +603,59 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
             <input
               value={project?.name || ""}
               onChange={(event) => updateProjectName(event.target.value)}
-              className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-3 text-sm font-semibold normal-case tracking-normal text-[var(--ink)] shadow-inner"
+              className="focus-ring mt-2 h-10 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm text-[var(--ink)] shadow-inner"
             />
           </label>
 
-          <section className="mt-6">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-black uppercase tracking-[0.14em] text-[var(--ink)]">Scenes</h2>
-              <span className="text-xs font-semibold text-[var(--muted)]">{project?.scenes.length || 0}</span>
-            </div>
-
-            <div className="space-y-2">
-              {project?.scenes.map((scene) => (
-                <div
-                  key={scene.id}
-                  className={
-                    scene.id === selectedScene?.id
-                      ? "rounded-lg border border-[var(--accent)] bg-[var(--soft)] p-2"
-                      : "rounded-lg border border-[var(--line)] bg-white p-2"
-                  }
-                >
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-                    <button
-                      type="button"
-                      className="focus-ring min-w-0 rounded-md text-left"
-                      onClick={() => {
-                        setSelectedSceneId(scene.id);
-                        setScenesOpen(false);
-                      }}
-                    >
-                      <span className="block truncate text-sm font-black text-[var(--ink)]">{scene.name}</span>
-                      <span className="mt-1 block truncate text-[11px] text-[var(--muted)]">
-                        {scene.id === project.activeSceneId ? "Active" : scene.modelPathname || "No GLB"}
-                      </span>
-                    </button>
-                    <span className={scene.id === project.activeSceneId ? "rounded-full bg-[var(--ink)] px-2 py-1 text-[10px] font-black text-white" : "rounded-full border border-[var(--line)] px-2 py-1 text-[10px] font-black text-[var(--muted)]"}>
-                      {scene.id === project.activeSceneId ? "ON" : "Scene"}
-                    </span>
-                  </div>
-                  <div className="mt-2 flex gap-2">
-                    <button
-                      type="button"
-                      className={scene.id === project.activeSceneId ? "button-compact-primary flex-1" : "button-compact flex-1"}
-                      disabled={working || scene.id === project.activeSceneId}
-                      onClick={() => setActiveScene(scene.id)}
-                    >
-                      {scene.id === project.activeSceneId ? "Active" : "Set active"}
-                    </button>
-                    <button
-                      type="button"
-                      className="button-compact-danger"
-                      disabled={working}
-                      onClick={() => deleteScene(scene.id)}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              ))}
-
-              {project && project.scenes.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-[var(--line)] bg-[var(--soft)] p-3 text-sm leading-6 text-[var(--muted)]">
-                  No scenes yet. Add a GLB scene below.
-                </div>
-              ) : null}
-            </div>
-          </section>
-
-          <form onSubmit={createScene} className="mt-6 rounded-xl border border-[var(--line)] bg-[var(--soft)] p-3">
-            <h3 className="text-sm font-black text-[var(--ink)]">Add scene</h3>
+          <form onSubmit={createScene} className="mt-5 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
+            <h2 className="text-sm font-semibold text-[var(--ink)]">Add GLB scene</h2>
             <input
               value={newSceneName}
               onChange={(event) => setNewSceneName(event.target.value)}
-              className="focus-ring mt-3 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm text-[var(--ink)]"
               placeholder="Scene name"
+              className="focus-ring mt-3 h-9 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm text-[var(--ink)] shadow-inner"
             />
             <input
               type="file"
               accept=".glb,model/gltf-binary,application/octet-stream"
               onChange={(event) => setNewSceneFile(event.target.files?.[0] || null)}
-              className="focus-ring mt-3 w-full rounded-lg border border-dashed border-[var(--line)] bg-white px-3 py-3 text-xs text-[var(--ink)] file:mr-3 file:rounded-md file:border-0 file:bg-[var(--ink)] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-white"
+              className="focus-ring mt-3 w-full rounded-md border border-dashed border-[var(--line)] bg-white px-2.5 py-2 text-xs text-[var(--ink)] file:mr-2 file:rounded file:border-0 file:bg-[var(--ink)] file:px-2.5 file:py-1.5 file:text-xs file:font-semibold file:text-white"
             />
             <button
               type="submit"
-              disabled={working || !password || !newSceneFile}
-              className="focus-ring mt-3 w-full rounded-lg bg-[var(--accent)] px-4 py-3 text-sm font-semibold text-white hover:bg-[var(--accent-dark)] disabled:opacity-60"
+              disabled={working || !newSceneFile}
+              className="button-compact-primary mt-3 w-full"
             >
-              {uploadStage === "uploading" ? `Uploading ${uploadProgress}%` : "Upload and add scene"}
+              {uploadStage === "uploading" ? `Uploading ${uploadProgress}%` : "Add scene"}
             </button>
           </form>
 
+          <div className="mt-5 space-y-2">
+            {project?.scenes.map((scene) => (
+              <button
+                key={scene.id}
+                type="button"
+                className={`w-full rounded-lg border px-3 py-3 text-left text-sm font-semibold ${
+                  scene.id === selectedScene?.id
+                    ? "border-[var(--ink)] bg-[var(--ink)] text-white"
+                    : "border-[var(--line)] bg-white text-[var(--ink)] hover:bg-[var(--soft)]"
+                }`}
+                onClick={() => {
+                  setSelectedSceneId(scene.id);
+                  setScenesOpen(false);
+                }}
+              >
+                <span className="block truncate">{scene.name}</span>
+                <span className="mt-1 block truncate text-xs opacity-70">{scene.modelPathname || "No GLB"}</span>
+              </button>
+            ))}
+          </div>
         </aside>
 
-        <section className="relative flex h-full min-w-0 flex-col">
-          <div className={`pointer-events-none absolute left-3 z-20 flex max-w-[calc(100%-7rem)] flex-wrap items-center gap-2 ${error && !selectedScene ? "top-14" : "top-3"}`}>
+        <section className="relative flex min-h-0 flex-col">
+          <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap items-center gap-2">
             <div className="pointer-events-auto flex rounded-md border border-[var(--line)] bg-white/90 p-1 shadow-sm backdrop-blur">
-              {(["translate", "rotate", "scale"] as TransformMode[]).map((mode) => (
+              {(["translate", "rotate", "scale"] as const).map((mode) => (
                 <button
                   key={mode}
                   type="button"
@@ -731,15 +690,15 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
             </p>
           ) : null}
           <SceneThreeViewport
-            key={`${selectedScene?.id || "empty"}-${selectedScene?.modelUrl || "none"}`}
+            key={`${selectedScene?.id || "empty"}-${selectedScene?.modelUrl || "none"}-${project?.target.widthMm || 0}-${project?.target.correctionMode || "NONE"}`}
             scene={selectedScene}
-            marker={project?.marker || defaultMarkerForRender()}
+            target={project?.target || createDefaultTarget()}
             editable
             transformMode={transformMode}
             className="flex-1"
             onSceneChange={handleSceneTransformChange}
-            onMetricsChange={handleMetricsChange}
-            onStatusChange={handleViewportStatus}
+            onMetricsChange={setMetrics}
+            onStatusChange={setStatus}
           />
         </section>
 
@@ -773,12 +732,15 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
               onDelete={() => deleteScene(selectedScene.id)}
               onSave={() => saveProject(project, "Scene saved.")}
               onSceneNameChange={(name) => updateScene(selectedScene.id, (scene) => ({ ...scene, name }))}
+              onTargetWidthChange={updateTargetWidth}
+              onTargetHeightChange={updateTargetHeight}
+              onCorrectionModeChange={updateCorrectionMode}
               onNormalizedScaleChange={(value) => updateSceneNumber(selectedScene.id, "normalizedScale", value)}
               onPositionChange={(axis, value) => updatePlacementNumber(selectedScene.id, "position", axis, value)}
               onRotationChange={(axis, value) => updatePlacementNumber(selectedScene.id, "rotation", axis, value)}
               onReset={() => resetScene(selectedScene.id)}
               onCenter={() => centerScene(selectedScene.id)}
-              onFit={() => updateScene(selectedScene.id, fitModelToMarker)}
+              onFit={() => updateScene(selectedScene.id, fitModelToTarget)}
               onRotate={(axis) => rotateScene(selectedScene.id, axis)}
             />
 
@@ -790,70 +752,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
           </aside>
         ) : null}
       </div>
-      {project && markerOpen ? (
-        <MarkerModal
-          project={project}
-          saveState={saveState}
-          busy={working}
-          onApply={() => saveMarkerSettings(true)}
-        />
-      ) : null}
     </main>
-  );
-}
-
-function MarkerModal({
-  project,
-  saveState,
-  busy,
-  onApply
-}: {
-  project: ProjectMetadata;
-  saveState: SaveState;
-  busy: boolean;
-  onApply: () => void;
-}) {
-  const marker = project.marker;
-  const markerSaveLabel = {
-    saved: "Saved",
-    dirty: "Unsaved",
-    saving: "Saving...",
-    error: "Save error"
-  }[saveState];
-  const svgHref = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-    buildMarkerSvg(project.name, marker)
-  )}`;
-
-  return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-black/45 p-3">
-      <section className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-xl border border-[var(--line)] bg-white p-4 shadow-2xl md:p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] pb-4">
-          <div>
-            <h2 className="text-lg font-semibold text-[var(--ink)]">Marker settings</h2>
-            <p className="mt-1 text-xs text-[var(--muted)]">{markerSaveLabel} - {project.name}</p>
-          </div>
-          <button type="button" className="button-compact-primary" disabled={busy} onClick={onApply}>
-            Apply changes
-          </button>
-        </div>
-
-        <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="grid min-h-[26rem] place-items-center rounded-lg border border-[var(--line)] bg-white p-6">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={HIRO_MARKER_IMAGE_URL} alt="HIRO marker" className="aspect-square w-full max-w-md object-contain" />
-          </div>
-
-          <aside className="space-y-4">
-            <div className="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3 text-sm font-semibold text-[var(--ink)]">
-              Fixed baseline: one 200mm x 200mm HIRO marker. This is the same marker shown in the 3D playground and tracked on mobile.
-            </div>
-            <a className="button-compact-primary w-full justify-center" href={svgHref} download={`${safeFileName(project.name)}-marker.svg`}>
-              Download Marker
-            </a>
-          </aside>
-        </div>
-      </section>
-    </div>
   );
 }
 
@@ -871,6 +770,9 @@ function SceneInspector({
   onDelete,
   onSave,
   onSceneNameChange,
+  onTargetWidthChange,
+  onTargetHeightChange,
+  onCorrectionModeChange,
   onNormalizedScaleChange,
   onPositionChange,
   onRotationChange,
@@ -892,6 +794,9 @@ function SceneInspector({
   onDelete: () => void;
   onSave: () => void;
   onSceneNameChange: (name: string) => void;
+  onTargetWidthChange: (value: string) => void;
+  onTargetHeightChange: (value: string) => void;
+  onCorrectionModeChange: (mode: ModelCorrectionMode) => void;
   onNormalizedScaleChange: (value: string) => void;
   onPositionChange: (axis: "x" | "y" | "z", value: string) => void;
   onRotationChange: (axis: "x" | "y" | "z", value: string) => void;
@@ -964,6 +869,43 @@ function SceneInspector({
       </details>
 
       <section className="rounded-lg border border-[var(--line)] bg-white p-3">
+        <h3 className="text-sm font-semibold text-[var(--ink)]">Image target</h3>
+        <div className="mt-3 overflow-hidden rounded-md border border-[var(--line)] bg-[var(--soft)]">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={project.target.previewUrl || project.target.imageUrl} alt="Masterplan image target" className="aspect-[14012/11633] w-full object-cover" />
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <NumberField
+            label="Width mm"
+            value={project.target.widthMm}
+            onChange={onTargetWidthChange}
+          />
+          <NumberField
+            label="Height mm"
+            value={project.target.heightMm}
+            onChange={onTargetHeightChange}
+          />
+        </div>
+        <label className="mt-3 block text-xs font-semibold uppercase text-[var(--muted)]">
+          Model correction
+          <select
+            value={project.target.correctionMode}
+            onChange={(event) => onCorrectionModeChange(event.target.value as ModelCorrectionMode)}
+            className="focus-ring mt-1.5 h-9 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm font-medium text-[var(--ink)] shadow-inner"
+          >
+            {MODEL_CORRECTION_MODES.map((mode) => (
+              <option key={mode} value={mode}>
+                {mode}
+              </option>
+            ))}
+          </select>
+        </label>
+        <a className="button-compact mt-3 w-full justify-center" href={project.target.imageUrl} download>
+          Download target image
+        </a>
+      </section>
+
+      <section className="rounded-lg border border-[var(--line)] bg-white p-3">
         <h3 className="text-sm font-semibold text-[var(--ink)]">Position (mm)</h3>
         <div className="grid grid-cols-3 gap-2">
           {(["x", "y", "z"] as const).map((axis) => (
@@ -1001,7 +943,7 @@ function SceneInspector({
       </section>
 
       <section className="rounded-lg border border-[var(--line)] bg-white p-3">
-        <h3 className="text-sm font-semibold text-[var(--ink)]">Scale on marker</h3>
+        <h3 className="text-sm font-semibold text-[var(--ink)]">Scale on target</h3>
         <div className="mt-3">
           <NumberField
             label="Relative scale"
@@ -1017,16 +959,13 @@ function SceneInspector({
             onChange={(event) => onNormalizedScaleChange(event.target.value)}
             className="mt-3 w-full accent-[var(--accent)]"
           />
-          <p className="mt-2 text-xs font-semibold text-[var(--muted)]">1 = fitted to the 200mm HIRO marker.</p>
+          <p className="mt-2 text-xs font-semibold text-[var(--muted)]">1 = fitted to the masterplan image target.</p>
         </div>
         {metrics ? (
           <p className="mt-3 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-2 text-xs font-bold text-[var(--muted)]">
             Displayed: {formatNumber(metrics.modelWidthM * metrics.displayedScale)}m x {formatNumber(metrics.modelDepthM * metrics.displayedScale)}m
           </p>
         ) : null}
-        <p className="mt-3 text-xs leading-5 text-[var(--muted)]">
-          The desktop preview and phone AR both use this same marker-relative scale.
-        </p>
       </section>
 
       <section className="grid grid-cols-2 gap-2">
@@ -1037,7 +976,7 @@ function SceneInspector({
           Center
         </button>
         <button type="button" className="button-compact" onClick={onFit}>
-          Fit marker
+          Fit target
         </button>
         <button
           type="button"
@@ -1172,33 +1111,6 @@ function NumberField({
       />
     </label>
   );
-}
-
-function buildMarkerSvg(projectName: string, marker: MarkerSettings) {
-  const geometry = getMarkerBoardGeometry(marker);
-  const width = geometry.widthMm;
-  const height = geometry.heightMm;
-  void projectName;
-
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
-  <image href="${escapeXml(HIRO_MARKER_IMAGE_URL)}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid meet"/>
-</svg>`;
-}
-
-function safeFileName(value: string) {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "marker";
-}
-
-function escapeXml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function defaultMarkerForRender() {
-  return createDefaultMarker();
 }
 
 function parseDecimal(value: string, fallback: number) {

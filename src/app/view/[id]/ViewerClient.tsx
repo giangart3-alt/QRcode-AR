@@ -88,14 +88,13 @@ export function ViewerClient({ id }: { id: string }) {
               <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--soft)]">Fallback viewer</p>
               <h1 className="mt-3 text-3xl font-black">{project.name}</h1>
               <p className="mt-4 text-sm leading-6 text-white/70">
-                Use orbit controls to inspect the model. If your phone supports WebXR,
-                Scene Viewer, or Quick Look, the AR button will appear inside the viewer.
+                Use orbit controls to inspect the model. The mobile AR page uses the printed masterplan image as the tracked target.
               </p>
               <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
                 <div className="rounded-md bg-white/8 p-3">
-                  <dt className="font-semibold text-white/55">Marker</dt>
+                  <dt className="font-semibold text-white/55">Image target</dt>
                   <dd className="mt-1 font-bold text-white">
-                    {project.marker.widthMm} x {project.marker.heightMm} mm
+                    {project.target.widthMm} x {project.target.heightMm} mm
                   </dd>
                 </div>
                 <div className="rounded-md bg-white/8 p-3">
@@ -108,19 +107,13 @@ export function ViewerClient({ id }: { id: string }) {
                   className="focus-ring rounded-md bg-[var(--accent)] px-4 py-3 text-center font-semibold text-[var(--ink)]"
                   href={project.arUrl}
                 >
-                  Try marker AR
+                  Open mobile AR
                 </Link>
                 <Link
                   className="focus-ring rounded-md border border-white/20 bg-white/10 px-4 py-3 text-center font-semibold text-white hover:bg-white/15"
                   href={project.urls.dashboardUrl}
                 >
                   Open project workspace
-                </Link>
-                <Link
-                  className="focus-ring rounded-md border border-white/20 bg-white/10 px-4 py-3 text-center font-semibold text-white hover:bg-white/15"
-                  href={project.markerUrl}
-                >
-                  Open marker
                 </Link>
               </div>
             </aside>
