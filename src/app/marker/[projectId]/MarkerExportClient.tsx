@@ -3,7 +3,11 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
-import { HIRO_MARKER_IMAGE_URL, type MarkerSettings } from "@/lib/placement";
+import {
+  HIRO_MARKER_IMAGE_URL,
+  getMarkerBoardGeometry,
+  type MarkerSettings
+} from "@/lib/placement";
 import { PrintButton } from "../PrintButton";
 
 type ExportPreset = {
@@ -41,8 +45,8 @@ export function MarkerExportClient({
   qrDataUrl: string;
   error: string;
 }) {
-  const [presetLabel, setPresetLabel] = useState("A1");
-  const [customMm, setCustomMm] = useState({ width: 1000, height: 700 });
+  const [presetLabel, setPresetLabel] = useState("Custom mm");
+  const [customMm, setCustomMm] = useState({ width: marker.widthMm, height: marker.heightMm });
   const [customPx, setCustomPx] = useState({ width: 1920, height: 1080 });
   const [pngStatus, setPngStatus] = useState("");
 
@@ -59,8 +63,8 @@ export function MarkerExportClient({
   }, [customMm, customPx, presetLabel]);
 
   const svgMarkup = useMemo(
-    () => buildMarkerSvg({ projectName, exportSize }),
-    [exportSize, projectName]
+    () => buildMarkerSvg({ projectName, marker }),
+    [marker, projectName]
   );
   const svgHref = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgMarkup)}`;
 
@@ -85,7 +89,7 @@ export function MarkerExportClient({
       context.strokeRect(context.lineWidth / 2, context.lineWidth / 2, canvas.width - context.lineWidth, canvas.height - context.lineWidth);
 
       const markerImage = await loadImage(HIRO_MARKER_IMAGE_URL);
-      const layout = getHiroBoardLayout(canvas.width, canvas.height);
+      const layout = getHiroBoardLayout(canvas.width, canvas.height, marker);
 
       context.fillStyle = "#1c1917";
       context.textAlign = "center";
@@ -126,7 +130,7 @@ export function MarkerExportClient({
             <div className="grid min-h-[55vh] content-center gap-6 rounded-lg border border-[var(--line)] bg-white p-6 text-center print:rounded-none print:border-0">
               <p className="text-lg font-black text-[var(--ink)]">{projectName}</p>
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={HIRO_MARKER_IMAGE_URL} alt={`${projectName} HIRO marker`} className="mx-auto aspect-square w-[min(70%,34rem)]" />
+              <img src={svgHref} alt={`${projectName} marker board`} className="mx-auto max-h-[60vh] max-w-full" />
               <p className="text-sm font-bold text-[var(--ink)]">Track the large black marker. Keep the whole black border visible.</p>
             </div>
             <div className="grid content-start gap-3">
@@ -248,17 +252,17 @@ function SizeInputs({
 
 function buildMarkerSvg({
   projectName,
-  exportSize
+  marker
 }: {
   projectName: string;
-  exportSize: ExportPreset;
+  marker: MarkerSettings;
 }) {
-  const unit = exportSize.unit;
-  const width = exportSize.width;
-  const height = exportSize.height;
-  const layout = getHiroBoardLayout(width, height);
+  const geometry = getMarkerBoardGeometry(marker);
+  const width = geometry.widthMm;
+  const height = geometry.heightMm;
+  const layout = getHiroBoardLayout(width, height, marker);
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}${unit}" height="${height}${unit}" viewBox="0 0 ${width} ${height}">
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
   <rect width="100%" height="100%" fill="#ffffff"/>
   <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#111827" stroke-width="${Math.max(1, Math.min(width, height) * 0.002)}"/>
   <text x="${width / 2}" y="${layout.titleY}" text-anchor="middle" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${layout.titleFontSize}" font-weight="800">${escapeXml(projectName)}</text>
@@ -267,23 +271,27 @@ function buildMarkerSvg({
 </svg>`;
 }
 
-function getHiroBoardLayout(width: number, height: number) {
-  const shortSide = Math.min(width, height);
+function getHiroBoardLayout(width: number, height: number, marker: MarkerSettings) {
+  const geometry = getMarkerBoardGeometry(marker);
+  const scale = Math.min(width / geometry.widthMm, height / geometry.heightMm);
+  const boardWidth = geometry.widthMm * scale;
+  const boardHeight = geometry.heightMm * scale;
+  const boardX = (width - boardWidth) / 2;
+  const boardY = (height - boardHeight) / 2;
+  const markerSize = geometry.trackingMarkerRectMm.sizeMm * scale;
+  const shortSide = Math.min(boardWidth, boardHeight);
   const margin = Math.max(shortSide * 0.06, 16);
   const titleFontSize = Math.max(shortSide * 0.04, 12);
   const noteFontSize = Math.max(shortSide * 0.022, 7);
-  const topReserve = margin + titleFontSize * 1.3;
-  const bottomReserve = margin + noteFontSize * 2.5;
-  const markerSize = Math.min(shortSide * 0.68, width - margin * 2, height - topReserve - bottomReserve);
 
   return {
     titleFontSize,
     noteFontSize,
-    titleY: margin + titleFontSize,
-    noteY: height - margin,
+    titleY: boardY + margin + titleFontSize,
+    noteY: boardY + boardHeight - margin,
     markerSize,
-    markerX: (width - markerSize) / 2,
-    markerY: topReserve + Math.max((height - topReserve - bottomReserve - markerSize) / 2, 0)
+    markerX: boardX + geometry.trackingMarkerRectMm.xMm * scale,
+    markerY: boardY + geometry.trackingMarkerRectMm.yMm * scale
   };
 }
 

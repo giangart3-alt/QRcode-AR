@@ -12,6 +12,7 @@ import {
   MARKER_STYLES,
   createDefaultPlacement,
   createMarkerSettings,
+  getMarkerBoardGeometry,
   screenPhysicalSizeFromPixels,
   type MarkerSettings,
   type MarkerOutputMode,
@@ -990,7 +991,7 @@ function MarkerModal({
     context.strokeRect(context.lineWidth / 2, context.lineWidth / 2, canvas.width - context.lineWidth, canvas.height - context.lineWidth);
 
     const markerImage = await loadImage(HIRO_MARKER_IMAGE_URL);
-    const layout = getHiroBoardLayout(canvas.width, canvas.height);
+    const layout = getHiroBoardLayout(canvas.width, canvas.height, marker);
     context.fillStyle = "#1c1917";
     context.textAlign = "center";
     context.font = `800 ${layout.titleFontSize}px Arial`;
@@ -1026,7 +1027,7 @@ function MarkerModal({
               <div className="grid min-h-96 content-center gap-5 rounded-md border border-[var(--line)] bg-white p-5 text-center">
                 <p className="text-base font-black text-[var(--ink)]">{project.name}</p>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={HIRO_MARKER_IMAGE_URL} alt={`${project.name} HIRO marker`} className="mx-auto aspect-square w-[min(78%,24rem)]" />
+                <img src={svgHref} alt={`${project.name} marker board`} className="mx-auto max-h-96 max-w-full" />
                 <p className="text-xs font-bold text-[var(--ink)]">Track the large black marker. Keep the whole black border visible.</p>
               </div>
               <div className="grid content-start gap-3">
@@ -1589,9 +1590,10 @@ function NumberField({
 }
 
 function buildMarkerSvg(projectName: string, marker: MarkerSettings) {
-  const width = marker.widthMm;
-  const height = marker.heightMm;
-  const layout = getHiroBoardLayout(width, height);
+  const geometry = getMarkerBoardGeometry(marker);
+  const width = geometry.widthMm;
+  const height = geometry.heightMm;
+  const layout = getHiroBoardLayout(width, height, marker);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
   <rect width="100%" height="100%" fill="#ffffff"/>
@@ -1602,23 +1604,27 @@ function buildMarkerSvg(projectName: string, marker: MarkerSettings) {
 </svg>`;
 }
 
-function getHiroBoardLayout(width: number, height: number) {
-  const shortSide = Math.min(width, height);
+function getHiroBoardLayout(width: number, height: number, marker: MarkerSettings) {
+  const geometry = getMarkerBoardGeometry(marker);
+  const scale = Math.min(width / geometry.widthMm, height / geometry.heightMm);
+  const boardWidth = geometry.widthMm * scale;
+  const boardHeight = geometry.heightMm * scale;
+  const boardX = (width - boardWidth) / 2;
+  const boardY = (height - boardHeight) / 2;
+  const markerSize = geometry.trackingMarkerRectMm.sizeMm * scale;
+  const shortSide = Math.min(boardWidth, boardHeight);
   const margin = Math.max(shortSide * 0.06, 16);
   const titleFontSize = Math.max(shortSide * 0.04, 12);
   const noteFontSize = Math.max(shortSide * 0.022, 7);
-  const topReserve = margin + titleFontSize * 1.3;
-  const bottomReserve = margin + noteFontSize * 2.5;
-  const markerSize = Math.min(shortSide * 0.68, width - margin * 2, height - topReserve - bottomReserve);
 
   return {
     titleFontSize,
     noteFontSize,
-    titleY: margin + titleFontSize,
-    noteY: height - margin,
+    titleY: boardY + margin + titleFontSize,
+    noteY: boardY + boardHeight - margin,
     markerSize,
-    markerX: (width - markerSize) / 2,
-    markerY: topReserve + Math.max((height - topReserve - bottomReserve - markerSize) / 2, 0)
+    markerX: boardX + geometry.trackingMarkerRectMm.xMm * scale,
+    markerY: boardY + geometry.trackingMarkerRectMm.yMm * scale
   };
 }
 

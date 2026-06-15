@@ -16,10 +16,12 @@ import {
   createDefaultPlacement,
   DEFAULT_MARKER_HEIGHT_MM,
   DEFAULT_MARKER_WIDTH_MM,
-  boardImageUrlForStyle,
+  getMarkerBoardGeometry,
   getMarkerBoardImageUrl,
+  markerBoardImageDataUrlForStyle,
   mmToMeters,
   normalizePlacement,
+  type MarkerSettings,
   type PlacementMetadata
 } from "@/lib/placement";
 import type { ProjectMetadata } from "@/lib/projects";
@@ -138,14 +140,14 @@ export function EditorClient({ id }: { id: string }) {
     scene.add(directional);
 
     const boardImageUrl = getMarkerBoardImageUrl(marker);
-    const fallbackBoardImageUrl = boardImageUrlForStyle(
+    const fallbackBoardImageUrl = markerBoardImageDataUrlForStyle(
       "technical-grid",
       marker.widthMm,
       marker.heightMm,
       marker.trackingMarkerSizeOnBoardMm,
       marker.trackingMarkerPositionOnBoard
     );
-    const fallbackTexture = createFallbackBoardTexture(marker.widthMm, marker.heightMm);
+    const fallbackTexture = createFallbackBoardTexture(marker);
     let boardTexture: THREE.Texture = fallbackTexture;
     const boardMaterial = new THREE.MeshBasicMaterial({
       map: boardTexture,
@@ -672,7 +674,10 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]) {
   material.dispose();
 }
 
-function createFallbackBoardTexture(widthMm: number, heightMm: number) {
+function createFallbackBoardTexture(marker: MarkerSettings) {
+  const geometry = getMarkerBoardGeometry(marker);
+  const widthMm = geometry.widthMm;
+  const heightMm = geometry.heightMm;
   const width = 1024;
   const height = Math.max(512, Math.round(width * (heightMm / Math.max(widthMm, 1))));
   const canvas = document.createElement("canvas");
@@ -705,9 +710,10 @@ function createFallbackBoardTexture(widthMm: number, heightMm: number) {
       context.stroke();
     }
 
-    const markerSize = Math.min(width, height) * 0.34;
-    const markerX = width / 2 - markerSize / 2;
-    const markerY = height / 2 - markerSize / 2;
+    const scale = width / widthMm;
+    const markerSize = geometry.trackingMarkerRectMm.sizeMm * scale;
+    const markerX = geometry.trackingMarkerRectMm.xMm * scale;
+    const markerY = geometry.trackingMarkerRectMm.yMm * scale;
     drawFallbackTracker(context, markerX, markerY, markerSize);
   }
 

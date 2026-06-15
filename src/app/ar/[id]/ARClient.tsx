@@ -9,7 +9,7 @@ import {
   HIRO_MARKER_ID,
   HIRO_MARKER_IMAGE_URL,
   HIRO_MARKER_PATTERN_URL,
-  mmToMeters
+  getMarkerBoardGeometry
 } from "@/lib/placement";
 import {
   applyRuntimeSceneTransform,
@@ -90,6 +90,14 @@ type RuntimeStatus = {
     heightM: number;
     trackingSizeMm: number;
     trackingSizeM: number;
+    trackingCenterMm: {
+      xMm: number;
+      yMm: number;
+    };
+    boardOffsetFromTrackingCenterM: {
+      xM: number;
+      yM: number;
+    };
   };
   appPlacement: {
     positionMm: VectorDebug;
@@ -118,6 +126,13 @@ type RuntimeStatus = {
     groupRotationRad: VectorDebug;
     groupRotationDeg: VectorDebug;
     groupScale: VectorDebug;
+    boardReferencePositionM: VectorDebug;
+    boardReferenceRotationRad: VectorDebug;
+    boardReferenceScale: VectorDebug;
+    boardOffsetFromTrackingCenterM: {
+      xM: number;
+      yM: number;
+    };
   } | null;
   finalModelTransform: {
     positionM: VectorDebug;
@@ -131,6 +146,15 @@ type RuntimeStatus = {
 const AR_SCRIPT = "https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.7/three.js/build/ar-threex.js";
 const CAMERA_PARAMETERS = "https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.7/data/data/camera_para.dat";
 const LAST_POSE_HOLD_MS = 3000;
+const DEFAULT_MARKER_GEOMETRY = getMarkerBoardGeometry({
+  widthMm: DEFAULT_MARKER_WIDTH_MM,
+  heightMm: DEFAULT_MARKER_HEIGHT_MM,
+  trackingMarkerSizeOnBoardMm: 0,
+  trackingMarkerPositionOnBoard: {
+    xMm: 0,
+    yMm: 0
+  }
+});
 
 const INITIAL_STATUS: RuntimeStatus = {
   projectLoading: true,
@@ -151,12 +175,20 @@ const INITIAL_STATUS: RuntimeStatus = {
   scaleMode: "",
   modelDimensions: null,
   markerDimensions: {
-    widthMm: DEFAULT_MARKER_WIDTH_MM,
-    heightMm: DEFAULT_MARKER_HEIGHT_MM,
-    widthM: mmToMeters(DEFAULT_MARKER_WIDTH_MM),
-    heightM: mmToMeters(DEFAULT_MARKER_HEIGHT_MM),
-    trackingSizeMm: Math.min(DEFAULT_MARKER_WIDTH_MM, DEFAULT_MARKER_HEIGHT_MM),
-    trackingSizeM: mmToMeters(Math.min(DEFAULT_MARKER_WIDTH_MM, DEFAULT_MARKER_HEIGHT_MM))
+    widthMm: DEFAULT_MARKER_GEOMETRY.widthMm,
+    heightMm: DEFAULT_MARKER_GEOMETRY.heightMm,
+    widthM: DEFAULT_MARKER_GEOMETRY.widthM,
+    heightM: DEFAULT_MARKER_GEOMETRY.heightM,
+    trackingSizeMm: DEFAULT_MARKER_GEOMETRY.trackingMarkerSizeMm,
+    trackingSizeM: DEFAULT_MARKER_GEOMETRY.trackingMarkerSizeM,
+    trackingCenterMm: {
+      xMm: DEFAULT_MARKER_GEOMETRY.trackingMarkerCenterMm.xMm,
+      yMm: DEFAULT_MARKER_GEOMETRY.trackingMarkerCenterMm.yMm
+    },
+    boardOffsetFromTrackingCenterM: {
+      xM: DEFAULT_MARKER_GEOMETRY.boardOffsetFromTrackingCenterM.xM,
+      yM: DEFAULT_MARKER_GEOMETRY.boardOffsetFromTrackingCenterM.yM
+    }
   },
   appPlacement: null,
   scaleDebug: null,
@@ -249,7 +281,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     const currentProject = project;
     const selectedScene = getActiveSceneForClient(currentProject);
     const marker = currentProject.marker;
-    const markerSizeM = safeTrackingMarkerSizeMeters(marker);
+    const markerGeometry = getMarkerBoardGeometry(marker);
+    const markerSizeM = markerGeometry.trackingMarkerSizeM;
     let stopped = false;
     let animationFrame = 0;
     let resizeHandler: (() => void) | null = null;
@@ -367,7 +400,17 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       axisCorrectionGroup.name = "editor-to-ar-axis-correction";
       axisCorrectionGroup.visible = true;
       modelAnchor.add(axisCorrectionGroup);
-      patchRuntimeStatus({ axisCorrection: axisCorrectionDebug(axisCorrectionGroup) });
+
+      const boardReferenceGroup = new THREE.Group();
+      boardReferenceGroup.name = "detected-hiro-to-editor-board-reference";
+      boardReferenceGroup.position.set(
+        markerGeometry.boardOffsetFromTrackingCenterM.xM,
+        0,
+        markerGeometry.boardOffsetFromTrackingCenterM.yM
+      );
+      boardReferenceGroup.visible = true;
+      axisCorrectionGroup.add(boardReferenceGroup);
+      patchRuntimeStatus({ axisCorrection: axisCorrectionDebug(axisCorrectionGroup, boardReferenceGroup, marker) });
 
       const arToolkitSource = new window.THREEx.ArToolkitSource({
         sourceType: "webcam",
@@ -519,11 +562,13 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
             "ar"
           );
           applyRuntimeSceneTransform(model, runtimeTransform);
-          axisCorrectionGroup.add(model);
+          boardReferenceGroup.add(model);
           const debugTransform = runtimeTransformDebug(
             runtimeTransform,
             activeScene,
             axisCorrectionGroup,
+            boardReferenceGroup,
+            marker,
             model
           );
 
@@ -686,6 +731,8 @@ function runtimeTransformDebug(
   transform: SceneRuntimeTransform,
   scene: SceneMetadata,
   axisCorrectionGroup: THREE.Group,
+  boardReferenceGroup: THREE.Group,
+  marker: MarkerSettings,
   model: THREE.Object3D
 ) {
   return {
@@ -710,7 +757,7 @@ function runtimeTransformDebug(
       rotationDeg: eulerDegreesDebug(transform.rotation),
       scale: roundForDebug(transform.scale)
     },
-    axisCorrection: axisCorrectionDebug(axisCorrectionGroup),
+    axisCorrection: axisCorrectionDebug(axisCorrectionGroup, boardReferenceGroup, marker),
     finalModelTransform: modelTransformDebug(model)
   };
 }
@@ -723,14 +770,23 @@ function placementDebug(scene: SceneMetadata) {
   };
 }
 
-function axisCorrectionDebug(group: THREE.Group) {
+function axisCorrectionDebug(group: THREE.Group, boardReferenceGroup: THREE.Group, marker: MarkerSettings) {
+  const markerGeometry = getMarkerBoardGeometry(marker);
+
   return {
-    applied: false,
-    note: "Identity correction; AR and editor both use Three.js X/Z for the board plane and Y-up for height.",
+    applied: true,
+    note: "AR tracks the HIRO square; this group restores the desktop editor board origin before applying the saved model transform.",
     groupPositionM: vectorDebug(group.position),
     groupRotationRad: eulerDebug(group.rotation),
     groupRotationDeg: eulerDegreesDebug(group.rotation),
-    groupScale: vectorDebug(group.scale)
+    groupScale: vectorDebug(group.scale),
+    boardReferencePositionM: vectorDebug(boardReferenceGroup.position),
+    boardReferenceRotationRad: eulerDebug(boardReferenceGroup.rotation),
+    boardReferenceScale: vectorDebug(boardReferenceGroup.scale),
+    boardOffsetFromTrackingCenterM: {
+      xM: roundForDebug(markerGeometry.boardOffsetFromTrackingCenterM.xM),
+      yM: roundForDebug(markerGeometry.boardOffsetFromTrackingCenterM.yM)
+    }
   };
 }
 
@@ -816,37 +872,24 @@ function disposeObject(root: THREE.Object3D) {
 }
 
 function markerDimensions(marker: MarkerSettings) {
-  const widthMm = positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM);
-  const heightMm = positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM);
-  const trackingSizeMm = safeTrackingMarkerSizeMm(marker);
+  const markerGeometry = getMarkerBoardGeometry(marker);
 
   return {
-    widthMm: roundForDebug(widthMm),
-    heightMm: roundForDebug(heightMm),
-    widthM: roundForDebug(mmToMeters(widthMm)),
-    heightM: roundForDebug(mmToMeters(heightMm)),
-    trackingSizeMm: roundForDebug(trackingSizeMm),
-    trackingSizeM: roundForDebug(safeTrackingMarkerSizeMeters(marker))
+    widthMm: roundForDebug(markerGeometry.widthMm),
+    heightMm: roundForDebug(markerGeometry.heightMm),
+    widthM: roundForDebug(markerGeometry.widthM),
+    heightM: roundForDebug(markerGeometry.heightM),
+    trackingSizeMm: roundForDebug(markerGeometry.trackingMarkerSizeMm),
+    trackingSizeM: roundForDebug(markerGeometry.trackingMarkerSizeM),
+    trackingCenterMm: {
+      xMm: roundForDebug(markerGeometry.trackingMarkerCenterMm.xMm),
+      yMm: roundForDebug(markerGeometry.trackingMarkerCenterMm.yMm)
+    },
+    boardOffsetFromTrackingCenterM: {
+      xM: roundForDebug(markerGeometry.boardOffsetFromTrackingCenterM.xM),
+      yM: roundForDebug(markerGeometry.boardOffsetFromTrackingCenterM.yM)
+    }
   };
-}
-
-function safeTrackingMarkerSizeMm(marker: MarkerSettings) {
-  const sizeMm = positiveNumber(
-    marker.trackingMarkerSizeOnBoardMm,
-    Math.min(
-      positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM),
-      positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM)
-    )
-  );
-  return Math.max(sizeMm, 50);
-}
-
-function safeTrackingMarkerSizeMeters(marker: MarkerSettings) {
-  return mmToMeters(safeTrackingMarkerSizeMm(marker));
-}
-
-function positiveNumber(value: number | undefined, fallback: number) {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 function finiteNumber(value: number | undefined, fallback: number) {

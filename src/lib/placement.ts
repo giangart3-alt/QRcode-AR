@@ -79,6 +79,32 @@ export type MarkerSettings = {
   };
 };
 
+export type MarkerBoardGeometry = {
+  widthMm: number;
+  heightMm: number;
+  widthM: number;
+  heightM: number;
+  trackingMarkerSizeMm: number;
+  trackingMarkerSizeM: number;
+  trackingMarkerCenterMm: {
+    xMm: number;
+    yMm: number;
+  };
+  boardOffsetFromTrackingCenterMm: {
+    xMm: number;
+    yMm: number;
+  };
+  boardOffsetFromTrackingCenterM: {
+    xM: number;
+    yM: number;
+  };
+  trackingMarkerRectMm: {
+    xMm: number;
+    yMm: number;
+    sizeMm: number;
+  };
+};
+
 export function createDefaultPlacement(
   scale = 1,
   verticalOffset = 0
@@ -266,7 +292,10 @@ export function markerImageUrlForStyle(styleId: string) {
 }
 
 export function getMarkerBoardImageUrl(marker: Pick<MarkerSettings, "boardImageUrl" | "imageUrl" | "boardStyle" | "widthMm" | "heightMm" | "trackingMarkerSizeOnBoardMm" | "trackingMarkerPositionOnBoard">) {
-  return marker.boardImageUrl || marker.imageUrl || boardImageUrlForStyle(
+  void marker.boardImageUrl;
+  void marker.imageUrl;
+
+  return markerBoardImageDataUrlForStyle(
     marker.boardStyle,
     marker.widthMm,
     marker.heightMm,
@@ -295,6 +324,73 @@ export function boardImageUrlForStyle(
   return HIRO_MARKER_IMAGE_URL;
 }
 
+export function markerBoardImageDataUrlForStyle(
+  styleId: string,
+  widthMm: number,
+  heightMm: number,
+  trackingMarkerSizeOnBoardMm = defaultTrackingMarkerSize(widthMm, heightMm),
+  trackingMarkerPositionOnBoard = { xMm: 0, yMm: 0 }
+) {
+  const svg = buildBoardSvg({
+    boardStyle: normalizeMarkerStyleId(styleId),
+    widthMm,
+    heightMm,
+    trackingMarkerSizeOnBoardMm,
+    trackingMarkerPositionOnBoard
+  });
+
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+export function getMarkerBoardGeometry(
+  marker: Pick<
+    MarkerSettings,
+    "widthMm" | "heightMm" | "trackingMarkerSizeOnBoardMm" | "trackingMarkerPositionOnBoard"
+  >
+): MarkerBoardGeometry {
+  const widthMm = positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM);
+  const heightMm = positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM);
+  const requestedTrackingSizeMm = normalizeTrackingMarkerSize(
+    marker.trackingMarkerSizeOnBoardMm,
+    widthMm,
+    heightMm
+  );
+  const trackingMarkerSizeMm = Math.min(
+    requestedTrackingSizeMm,
+    Math.max(Math.min(widthMm, heightMm), 1)
+  );
+  const halfAvailableX = Math.max(widthMm / 2 - trackingMarkerSizeMm / 2, 0);
+  const halfAvailableY = Math.max(heightMm / 2 - trackingMarkerSizeMm / 2, 0);
+  const requestedPosition = normalizeTrackingMarkerPosition(marker.trackingMarkerPositionOnBoard);
+  const trackingMarkerCenterMm = {
+    xMm: clampNumber(requestedPosition.xMm, -halfAvailableX, halfAvailableX),
+    yMm: clampNumber(requestedPosition.yMm, -halfAvailableY, halfAvailableY)
+  };
+
+  return {
+    widthMm,
+    heightMm,
+    widthM: mmToMeters(widthMm),
+    heightM: mmToMeters(heightMm),
+    trackingMarkerSizeMm,
+    trackingMarkerSizeM: mmToMeters(trackingMarkerSizeMm),
+    trackingMarkerCenterMm,
+    boardOffsetFromTrackingCenterMm: {
+      xMm: -trackingMarkerCenterMm.xMm,
+      yMm: -trackingMarkerCenterMm.yMm
+    },
+    boardOffsetFromTrackingCenterM: {
+      xM: mmToMeters(-trackingMarkerCenterMm.xMm),
+      yM: mmToMeters(-trackingMarkerCenterMm.yMm)
+    },
+    trackingMarkerRectMm: {
+      xMm: widthMm / 2 + trackingMarkerCenterMm.xMm - trackingMarkerSizeMm / 2,
+      yMm: heightMm / 2 - trackingMarkerCenterMm.yMm - trackingMarkerSizeMm / 2,
+      sizeMm: trackingMarkerSizeMm
+    }
+  };
+}
+
 export function buildBoardSvg({
   boardStyle,
   widthMm,
@@ -308,15 +404,18 @@ export function buildBoardSvg({
   trackingMarkerSizeOnBoardMm: number;
   trackingMarkerPositionOnBoard: { xMm: number; yMm: number };
 }) {
-  const width = Math.max(widthMm, 1);
-  const height = Math.max(heightMm, 1);
+  const geometry = getMarkerBoardGeometry({
+    widthMm,
+    heightMm,
+    trackingMarkerSizeOnBoardMm,
+    trackingMarkerPositionOnBoard
+  });
+  const width = geometry.widthMm;
+  const height = geometry.heightMm;
   const padding = Math.max(Math.min(width, height) * 0.035, 10);
-  const trackingSize = Math.min(
-    positiveNumber(trackingMarkerSizeOnBoardMm, defaultTrackingMarkerSize(width, height)),
-    Math.min(width, height) - padding * 2
-  );
-  const trackingX = width / 2 + trackingMarkerPositionOnBoard.xMm - trackingSize / 2;
-  const trackingY = height / 2 - trackingMarkerPositionOnBoard.yMm - trackingSize / 2;
+  const trackingSize = geometry.trackingMarkerRectMm.sizeMm;
+  const trackingX = geometry.trackingMarkerRectMm.xMm;
+  const trackingY = geometry.trackingMarkerRectMm.yMm;
   const labelFontSize = Math.max(Math.min(width, height) * 0.025, 10);
   const labelY = Math.min(height - padding, trackingY + trackingSize + labelFontSize * 1.7);
   const boardPattern = buildBoardPattern(boardStyle, width, height, padding);
@@ -407,6 +506,10 @@ function normalizeQrPlacement(placement: MarkerSettings["qrPlacement"] | null | 
     corner: "right" as const,
     sizeRatio: positiveNumber(placement?.sizeRatio, 0.18)
   };
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function buildBoardPattern(styleId: MarkerStyleId, width: number, height: number, padding: number) {
