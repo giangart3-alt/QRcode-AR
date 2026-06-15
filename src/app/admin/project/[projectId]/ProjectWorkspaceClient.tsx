@@ -9,17 +9,13 @@ import { SceneThreeViewport, type TransformMode } from "@/components/SceneThreeV
 import { APP_AXIS_COLORS, type AppAxis } from "@/lib/coordinates";
 import {
   HIRO_MARKER_IMAGE_URL,
-  MARKER_STYLES,
+  createDefaultMarker,
   createDefaultPlacement,
-  createMarkerSettings,
   getMarkerBoardGeometry,
-  screenPhysicalSizeFromPixels,
-  type MarkerSettings,
-  type MarkerOutputMode,
-  type MarkerStyleId
+  type MarkerSettings
 } from "@/lib/placement";
 import { fitModelToMarker, roundForStorage, type SceneScaleMetrics } from "@/lib/scene-transform";
-import type { ProjectMetadata, ScaleMode, SceneMetadata } from "@/lib/projects";
+import type { ProjectMetadata, SceneMetadata } from "@/lib/projects";
 
 type UploadProgress = {
   loaded?: number;
@@ -29,7 +25,6 @@ type UploadProgress = {
 
 type UploadStage = "idle" | "uploading" | "saving";
 type SaveState = "saved" | "dirty" | "saving" | "error";
-type MarkerOrientation = "landscape" | "portrait";
 
 type UploadRouteResponse = {
   error?: string;
@@ -37,23 +32,6 @@ type UploadRouteResponse = {
 
 const MAX_GLB_SIZE_BYTES = 500 * 1024 * 1024;
 const MULTIPART_THRESHOLD_BYTES = 8 * 1024 * 1024;
-const SCALE_PRESETS = [50, 100, 200, 500, 1000];
-const PRINT_PRESETS = [
-  { label: "A4", widthMm: 210, heightMm: 297 },
-  { label: "A3", widthMm: 297, heightMm: 420 },
-  { label: "A2", widthMm: 420, heightMm: 594 },
-  { label: "A1", widthMm: 594, heightMm: 841 },
-  { label: "A0", widthMm: 841, heightMm: 1189 },
-  { label: "2A0", widthMm: 1189, heightMm: 1682 },
-  { label: "4A0", widthMm: 1682, heightMm: 2378 }
-];
-const SCREEN_PRESETS = [
-  { label: "16:9", widthPx: 1920, heightPx: 1080 },
-  { label: "16:10", widthPx: 1920, heightPx: 1200 },
-  { label: "Full HD", widthPx: 1920, heightPx: 1080 },
-  { label: "4K", widthPx: 3840, heightPx: 2160 },
-  { label: "8K", widthPx: 7680, heightPx: 4320 }
-];
 
 export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
   const [password] = useState(() =>
@@ -69,11 +47,6 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
   const [qrOpen, setQrOpen] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [markerOpen, setMarkerOpen] = useState(false);
-  const [markerMode, setMarkerMode] = useState<"print" | "screen">("print");
-  const [markerOrientation, setMarkerOrientation] = useState<MarkerOrientation>("landscape");
-  const [customMarkerMm, setCustomMarkerMm] = useState({ widthMm: 1000, heightMm: 700 });
-  const [customScreenPx, setCustomScreenPx] = useState({ widthPx: 1920, heightPx: 1080 });
-  const [screenPhysicalMm, setScreenPhysicalMm] = useState({ widthMm: 600, heightMm: 338 });
   const [scenesOpen, setScenesOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [status, setStatus] = useState("Loading project...");
@@ -114,19 +87,6 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
         setError("");
         setProject(result.project);
         setSelectedSceneId(result.project.activeSceneId || result.project.scenes[0]?.id || "");
-        setMarkerMode(result.project.marker.outputMode || "print");
-        setCustomMarkerMm({
-          widthMm: result.project.marker.widthMm,
-          heightMm: result.project.marker.heightMm
-        });
-        setCustomScreenPx({
-          widthPx: result.project.marker.screen?.widthPx || 1920,
-          heightPx: result.project.marker.screen?.heightPx || 1080
-        });
-        setScreenPhysicalMm({
-          widthMm: result.project.marker.screen?.physicalWidthMm || result.project.marker.widthMm,
-          heightMm: result.project.marker.screen?.physicalHeightMm || result.project.marker.heightMm
-        });
         setSaveState("saved");
         setStatus("Project loaded.");
       } catch (caught) {
@@ -416,114 +376,6 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     }
   }
 
-  function updateMarkerDraft(marker: MarkerSettings, nextStatus = "Marker settings changed.") {
-    if (!project) return;
-    const updatedProject = { ...project, marker };
-    setProject(updatedProject);
-    markDirty(`${nextStatus} Save marker settings to persist.`);
-  }
-
-  function setMarkerStyle(styleId: MarkerStyleId) {
-    if (!project) return;
-    updateMarkerDraft(createMarkerSettings({ ...project.marker, styleId }), "Board style updated.");
-  }
-
-  function setPrintMarkerSize(widthMm: number, heightMm: number, label: string) {
-    if (!project) return;
-    setMarkerMode("print");
-    setCustomMarkerMm({ widthMm, heightMm });
-    updateMarkerDraft(
-      createMarkerSettings({
-        ...project.marker,
-        outputMode: "print",
-        presetLabel: label,
-        widthMm,
-        heightMm
-      }),
-      `${label} marker size updated.`
-    );
-  }
-
-  function setScreenMarkerSize(widthPx: number, heightPx: number, label: string) {
-    if (!project) return;
-    const physical = screenPhysicalSizeFromPixels(widthPx, heightPx, screenPhysicalMm.widthMm);
-
-    setMarkerMode("screen");
-    setCustomScreenPx({ widthPx, heightPx });
-    setScreenPhysicalMm(physical);
-    updateMarkerDraft(
-      createMarkerSettings({
-        ...project.marker,
-        outputMode: "screen",
-        presetLabel: label,
-        screen: {
-          widthPx,
-          heightPx,
-          physicalWidthMm: physical.widthMm,
-          physicalHeightMm: physical.heightMm
-        }
-      }),
-      `${label} screen marker updated.`
-    );
-  }
-
-  function setScreenPhysicalSize(widthMm: number, heightMm: number) {
-    if (!project) return;
-    const widthPx = project.marker.screen?.widthPx || customScreenPx.widthPx;
-    const heightPx = project.marker.screen?.heightPx || customScreenPx.heightPx;
-
-    setMarkerMode("screen");
-    setScreenPhysicalMm({ widthMm, heightMm });
-    updateMarkerDraft(
-      createMarkerSettings({
-        ...project.marker,
-        outputMode: "screen",
-        presetLabel: project.marker.presetLabel || "Custom px",
-        screen: {
-          widthPx,
-          heightPx,
-          physicalWidthMm: widthMm,
-          physicalHeightMm: heightMm
-        }
-      }),
-      "Screen physical size updated."
-    );
-  }
-
-  function setMarkerOutputMode(outputMode: MarkerOutputMode) {
-    if (!project) return;
-    setMarkerMode(outputMode);
-
-    if (outputMode === "print") {
-      updateMarkerDraft(
-        createMarkerSettings({
-          ...project.marker,
-          outputMode: "print",
-          presetLabel: project.marker.presetLabel || "Custom mm",
-          widthMm: customMarkerMm.widthMm,
-          heightMm: customMarkerMm.heightMm
-        }),
-        "Print marker mode selected."
-      );
-      return;
-    }
-
-    updateMarkerDraft(
-      createMarkerSettings({
-        ...project.marker,
-        outputMode: "screen",
-        presetLabel: project.marker.presetLabel || "Full HD",
-        screen: {
-          widthPx: customScreenPx.widthPx,
-          heightPx: customScreenPx.heightPx,
-          physicalWidthMm: screenPhysicalMm.widthMm,
-          physicalHeightMm: screenPhysicalMm.heightMm
-        }
-      }),
-      "Screen marker mode selected."
-    );
-  }
-
   async function saveMarkerSettings(closeAfterSave = false) {
     const saved = await saveProject(project, "Marker settings saved.");
     if (saved && closeAfterSave) {
@@ -543,7 +395,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
   function updateSceneNumber(
     sceneId: string,
-    field: "normalizedScale" | "architecturalScale",
+    field: "normalizedScale",
     value: string
   ) {
     updateScene(sceneId, (scene) => ({
@@ -600,13 +452,6 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
           [axis]: roundForStorage(scene.placement.rotation[axis] + 90)
         }
       }
-    }));
-  }
-
-  function setScaleMode(sceneId: string, scaleMode: ScaleMode) {
-    updateScene(sceneId, (scene) => ({
-      ...scene,
-      scaleMode
     }));
   }
 
@@ -879,9 +724,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
               onDelete={() => deleteScene(selectedScene.id)}
               onSave={() => saveProject(project, "Scene saved.")}
               onSceneNameChange={(name) => updateScene(selectedScene.id, (scene) => ({ ...scene, name }))}
-              onScaleModeChange={(scaleMode) => setScaleMode(selectedScene.id, scaleMode)}
               onNormalizedScaleChange={(value) => updateSceneNumber(selectedScene.id, "normalizedScale", value)}
-              onArchitecturalScaleChange={(value) => updateSceneNumber(selectedScene.id, "architecturalScale", value)}
               onPositionChange={(axis, value) => updatePlacementNumber(selectedScene.id, "position", axis, value)}
               onRotationChange={(axis, value) => updatePlacementNumber(selectedScene.id, "rotation", axis, value)}
               onReset={() => resetScene(selectedScene.id)}
@@ -902,23 +745,10 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
         <MarkerModal
           project={project}
           qrDataUrl={qrDataUrl}
-          mode={markerMode}
-          orientation={markerOrientation}
-          customMm={customMarkerMm}
-          customPx={customScreenPx}
-          screenPhysicalMm={screenPhysicalMm}
           saveState={saveState}
           busy={working}
           onApply={() => saveMarkerSettings(true)}
           onSave={() => saveMarkerSettings(false)}
-          onModeChange={setMarkerOutputMode}
-          onOrientationChange={setMarkerOrientation}
-          onCustomMmChange={setCustomMarkerMm}
-          onCustomPxChange={setCustomScreenPx}
-          onScreenPhysicalMmChange={setScreenPhysicalSize}
-          onStyleChange={setMarkerStyle}
-          onSetPrintSize={setPrintMarkerSize}
-          onSetScreenSize={setScreenMarkerSize}
         />
       ) : null}
     </main>
@@ -928,43 +758,17 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 function MarkerModal({
   project,
   qrDataUrl,
-  mode,
-  orientation,
-  customMm,
-  customPx,
-  screenPhysicalMm,
   saveState,
   busy,
   onApply,
-  onSave,
-  onModeChange,
-  onOrientationChange,
-  onCustomMmChange,
-  onCustomPxChange,
-  onScreenPhysicalMmChange,
-  onStyleChange,
-  onSetPrintSize,
-  onSetScreenSize
+  onSave
 }: {
   project: ProjectMetadata;
   qrDataUrl: string;
-  mode: "print" | "screen";
-  orientation: MarkerOrientation;
-  customMm: { widthMm: number; heightMm: number };
-  customPx: { widthPx: number; heightPx: number };
-  screenPhysicalMm: { widthMm: number; heightMm: number };
   saveState: SaveState;
   busy: boolean;
   onApply: () => void;
   onSave: () => void;
-  onModeChange: (mode: MarkerOutputMode) => void;
-  onOrientationChange: (orientation: MarkerOrientation) => void;
-  onCustomMmChange: (value: { widthMm: number; heightMm: number }) => void;
-  onCustomPxChange: (value: { widthPx: number; heightPx: number }) => void;
-  onScreenPhysicalMmChange: (widthMm: number, heightMm: number) => void;
-  onStyleChange: (styleId: MarkerStyleId) => void;
-  onSetPrintSize: (widthMm: number, heightMm: number, label: string) => void;
-  onSetScreenSize: (widthPx: number, heightPx: number, label: string) => void;
 }) {
   const marker = project.marker;
   const markerSaveLabel = {
@@ -986,19 +790,9 @@ function MarkerModal({
 
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
-    context.strokeStyle = "#111827";
-    context.lineWidth = Math.max(2, Math.round(canvas.width * 0.002));
-    context.strokeRect(context.lineWidth / 2, context.lineWidth / 2, canvas.width - context.lineWidth, canvas.height - context.lineWidth);
 
     const markerImage = await loadImage(HIRO_MARKER_IMAGE_URL);
-    const layout = getHiroBoardLayout(canvas.width, canvas.height, marker);
-    context.fillStyle = "#1c1917";
-    context.textAlign = "center";
-    context.font = `800 ${layout.titleFontSize}px Arial`;
-    context.fillText(project.name, canvas.width / 2, layout.titleY);
-    context.drawImage(markerImage, layout.markerX, layout.markerY, layout.markerSize, layout.markerSize);
-    context.font = `700 ${layout.noteFontSize}px Arial`;
-    context.fillText("Track the large black marker. Keep the whole black border visible.", canvas.width / 2, layout.noteY);
+    context.drawImage(markerImage, 0, 0, canvas.width, canvas.height);
 
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) return;
@@ -1066,102 +860,9 @@ function MarkerModal({
           </div>
 
           <aside className="space-y-4">
-            <label className="block text-xs font-semibold text-[var(--ink)]">
-              Board style
-              <select
-                value={marker.boardStyle}
-                onChange={(event) => onStyleChange(event.target.value as MarkerStyleId)}
-                className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
-              >
-                {MARKER_STYLES.map((style) => (
-                  <option key={style.id} value={style.id}>
-                    {style.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <div>
-              <div className="grid grid-cols-2 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-1">
-                {(["print", "screen"] as const).map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    className={mode === item ? "rounded-md bg-[var(--ink)] px-3 py-2 text-sm font-black text-white" : "rounded-md px-3 py-2 text-sm font-black text-[var(--muted)]"}
-                    onClick={() => onModeChange(item)}
-                  >
-                    {item === "print" ? "Print" : "Screen"}
-                  </button>
-                ))}
-              </div>
-
-              {mode === "print" ? (
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <div className="col-span-2 grid grid-cols-2 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-1">
-                    {(["landscape", "portrait"] as MarkerOrientation[]).map((item) => (
-                      <button
-                        key={item}
-                        type="button"
-                        className={orientation === item ? "rounded-md bg-[var(--ink)] px-3 py-2 text-xs font-semibold text-white" : "rounded-md px-3 py-2 text-xs font-semibold text-[var(--muted)]"}
-                        onClick={() => onOrientationChange(item)}
-                      >
-                        {item === "landscape" ? "Landscape" : "Portrait"}
-                      </button>
-                    ))}
-                  </div>
-                  {PRINT_PRESETS.map((preset) => (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      disabled={busy}
-                      className="button-compact"
-                      onClick={() => {
-                        const next = dimensionsForOrientation(preset.widthMm, preset.heightMm, orientation);
-                        onSetPrintSize(next.widthMm, next.heightMm, preset.label);
-                      }}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                  <CustomSizeFields
-                    unit="mm"
-                    width={customMm.widthMm}
-                    height={customMm.heightMm}
-                    onChange={(width, height) => onCustomMmChange({ widthMm: width, heightMm: height })}
-                    onApply={() => onSetPrintSize(customMm.widthMm, customMm.heightMm, "Custom mm")}
-                  />
-                </div>
-              ) : (
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  {SCREEN_PRESETS.map((preset) => (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      disabled={busy}
-                      className="button-compact"
-                      onClick={() => onSetScreenSize(preset.widthPx, preset.heightPx, preset.label)}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                  <CustomSizeFields
-                    unit="px"
-                    width={customPx.widthPx}
-                    height={customPx.heightPx}
-                    onChange={(width, height) => onCustomPxChange({ widthPx: width, heightPx: height })}
-                    onApply={() => onSetScreenSize(customPx.widthPx, customPx.heightPx, "Custom px")}
-                  />
-                  <CustomSizeFields
-                    unit="mm"
-                    width={screenPhysicalMm.widthMm}
-                    height={screenPhysicalMm.heightMm}
-                    onChange={(width, height) => onScreenPhysicalMmChange(width, height)}
-                    onApply={() => onScreenPhysicalMmChange(screenPhysicalMm.widthMm, screenPhysicalMm.heightMm)}
-                  />
-                </div>
-              )}
+            <div className="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3 text-sm font-semibold text-[var(--ink)]">
+              Fixed baseline: one 200mm x 200mm HIRO marker. This is the same marker shown in the 3D playground and tracked on mobile.
             </div>
-
             <div className="grid grid-cols-2 gap-2">
               <CopyButton value={project.arUrl} label="Copy AR link" compact />
               <button type="button" className="button-compact-primary" disabled={busy} onClick={onSave}>
@@ -1190,44 +891,6 @@ function MarkerModal({
   );
 }
 
-function CustomSizeFields({
-  unit,
-  width,
-  height,
-  onChange,
-  onApply
-}: {
-  unit: "mm" | "px";
-  width: number;
-  height: number;
-  onChange: (width: number, height: number) => void;
-  onApply: () => void;
-}) {
-  return (
-    <div className="col-span-2 grid grid-cols-[1fr_1fr_auto] gap-2 rounded-lg border border-[var(--line)] p-2">
-      <input
-        type="number"
-        min="1"
-        value={width}
-        onChange={(event) => onChange(Number(event.target.value) || width, height)}
-        className="focus-ring w-full rounded-md border border-[var(--line)] px-2 py-2 text-sm"
-        aria-label={`Custom width ${unit}`}
-      />
-      <input
-        type="number"
-        min="1"
-        value={height}
-        onChange={(event) => onChange(width, Number(event.target.value) || height)}
-        className="focus-ring w-full rounded-md border border-[var(--line)] px-2 py-2 text-sm"
-        aria-label={`Custom height ${unit}`}
-      />
-      <button type="button" className="button-compact-primary" onClick={onApply}>
-        Custom {unit}
-      </button>
-    </div>
-  );
-}
-
 function SceneInspector({
   busy,
   project,
@@ -1242,9 +905,7 @@ function SceneInspector({
   onDelete,
   onSave,
   onSceneNameChange,
-  onScaleModeChange,
   onNormalizedScaleChange,
-  onArchitecturalScaleChange,
   onPositionChange,
   onRotationChange,
   onReset,
@@ -1265,9 +926,7 @@ function SceneInspector({
   onDelete: () => void;
   onSave: () => void;
   onSceneNameChange: (name: string) => void;
-  onScaleModeChange: (mode: ScaleMode) => void;
   onNormalizedScaleChange: (value: string) => void;
-  onArchitecturalScaleChange: (value: string) => void;
   onPositionChange: (axis: "x" | "y" | "z", value: string) => void;
   onRotationChange: (axis: "x" | "y" | "z", value: string) => void;
   onReset: () => void;
@@ -1376,71 +1035,31 @@ function SceneInspector({
       </section>
 
       <section className="rounded-lg border border-[var(--line)] bg-white p-3">
-        <h3 className="text-sm font-semibold text-[var(--ink)]">Scale</h3>
-        <div className="mt-2 grid grid-cols-2 rounded-md border border-[var(--line)] bg-[var(--soft)] p-1">
-          {(["fit", "architectural"] as ScaleMode[]).map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              className={scene.scaleMode === mode ? "rounded-md bg-[var(--ink)] px-3 py-2 text-xs font-black text-white" : "rounded-md px-3 py-2 text-xs font-black text-[var(--muted)]"}
-              onClick={() => onScaleModeChange(mode)}
-            >
-              {mode === "fit" ? "Fit" : "Architectural"}
-            </button>
-          ))}
+        <h3 className="text-sm font-semibold text-[var(--ink)]">Scale on marker</h3>
+        <div className="mt-3">
+          <NumberField
+            label="Relative scale"
+            value={scene.normalizedScale}
+            onChange={onNormalizedScaleChange}
+          />
+          <input
+            type="range"
+            min="0.1"
+            max="3"
+            step="0.1"
+            value={scene.normalizedScale}
+            onChange={(event) => onNormalizedScaleChange(event.target.value)}
+            className="mt-3 w-full accent-[var(--accent)]"
+          />
+          <p className="mt-2 text-xs font-semibold text-[var(--muted)]">1 = fitted to the 200mm HIRO marker.</p>
         </div>
-        {scene.scaleMode === "fit" ? (
-          <div className="mt-3">
-            <NumberField
-              label="Normalized fit scale"
-              value={scene.normalizedScale}
-              onChange={onNormalizedScaleChange}
-            />
-            <input
-              type="range"
-              min="0.1"
-              max="3"
-              step="0.1"
-              value={scene.normalizedScale}
-              onChange={(event) => onNormalizedScaleChange(event.target.value)}
-              className="mt-3 w-full accent-[var(--accent)]"
-            />
-            <p className="mt-2 text-xs font-semibold text-[var(--muted)]">1 = fit to marker</p>
-          </div>
-        ) : (
-          <>
-            <label className="mt-3 block text-sm font-semibold text-[var(--ink)]">
-              Architectural preset
-              <select
-                value={SCALE_PRESETS.includes(scene.architecturalScale) ? String(scene.architecturalScale) : "custom"}
-                onChange={(event) => {
-                  if (event.target.value !== "custom") onArchitecturalScaleChange(event.target.value);
-                }}
-                className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
-              >
-                {SCALE_PRESETS.map((scale) => (
-                  <option key={scale} value={scale}>
-                    1:{scale}
-                  </option>
-                ))}
-                <option value="custom">Custom</option>
-              </select>
-            </label>
-            <NumberField
-              label="Custom architectural scale"
-              value={scene.architecturalScale}
-              onChange={onArchitecturalScaleChange}
-            />
-          </>
-        )}
         {metrics ? (
           <p className="mt-3 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-2 text-xs font-bold text-[var(--muted)]">
             Displayed: {formatNumber(metrics.modelWidthM * metrics.displayedScale)}m x {formatNumber(metrics.modelDepthM * metrics.displayedScale)}m
           </p>
         ) : null}
         <p className="mt-3 text-xs leading-5 text-[var(--muted)]">
-          Fit mode computes scale from the GLB X/Z footprint and marker size. Architectural
-          mode treats GLB units as meters and displays them at the selected drawing scale.
+          The desktop preview and phone AR both use this same marker-relative scale.
         </p>
       </section>
 
@@ -1593,39 +1212,11 @@ function buildMarkerSvg(projectName: string, marker: MarkerSettings) {
   const geometry = getMarkerBoardGeometry(marker);
   const width = geometry.widthMm;
   const height = geometry.heightMm;
-  const layout = getHiroBoardLayout(width, height, marker);
+  void projectName;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
-  <rect width="100%" height="100%" fill="#ffffff"/>
-  <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#111827" stroke-width="${Math.max(1, Math.min(width, height) * 0.002)}"/>
-  <text x="${width / 2}" y="${layout.titleY}" text-anchor="middle" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${layout.titleFontSize}" font-weight="800">${escapeXml(projectName)}</text>
-  <image href="${escapeXml(HIRO_MARKER_IMAGE_URL)}" x="${layout.markerX}" y="${layout.markerY}" width="${layout.markerSize}" height="${layout.markerSize}" preserveAspectRatio="xMidYMid meet"/>
-  <text x="${width / 2}" y="${layout.noteY}" text-anchor="middle" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${layout.noteFontSize}" font-weight="700">Track the large black marker. Keep the whole black border visible.</text>
+  <image href="${escapeXml(HIRO_MARKER_IMAGE_URL)}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid meet"/>
 </svg>`;
-}
-
-function getHiroBoardLayout(width: number, height: number, marker: MarkerSettings) {
-  const geometry = getMarkerBoardGeometry(marker);
-  const scale = Math.min(width / geometry.widthMm, height / geometry.heightMm);
-  const boardWidth = geometry.widthMm * scale;
-  const boardHeight = geometry.heightMm * scale;
-  const boardX = (width - boardWidth) / 2;
-  const boardY = (height - boardHeight) / 2;
-  const markerSize = geometry.trackingMarkerRectMm.sizeMm * scale;
-  const shortSide = Math.min(boardWidth, boardHeight);
-  const margin = Math.max(shortSide * 0.06, 16);
-  const titleFontSize = Math.max(shortSide * 0.04, 12);
-  const noteFontSize = Math.max(shortSide * 0.022, 7);
-
-  return {
-    titleFontSize,
-    noteFontSize,
-    titleY: boardY + margin + titleFontSize,
-    noteY: boardY + boardHeight - margin,
-    markerSize,
-    markerX: boardX + geometry.trackingMarkerRectMm.xMm * scale,
-    markerY: boardY + geometry.trackingMarkerRectMm.yMm * scale
-  };
 }
 
 function loadImage(src: string) {
@@ -1649,19 +1240,6 @@ function safeFileName(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "marker";
 }
 
-function dimensionsForOrientation(
-  widthMm: number,
-  heightMm: number,
-  orientation: MarkerOrientation
-) {
-  const shortSide = Math.min(widthMm, heightMm);
-  const longSide = Math.max(widthMm, heightMm);
-
-  return orientation === "landscape"
-    ? { widthMm: longSide, heightMm: shortSide }
-    : { widthMm: shortSide, heightMm: longSide };
-}
-
 function escapeXml(value: string) {
   return value
     .replace(/&/g, "&amp;")
@@ -1671,7 +1249,7 @@ function escapeXml(value: string) {
 }
 
 function defaultMarkerForRender() {
-  return createMarkerSettings();
+  return createDefaultMarker();
 }
 
 function parseDecimal(value: string, fallback: number) {

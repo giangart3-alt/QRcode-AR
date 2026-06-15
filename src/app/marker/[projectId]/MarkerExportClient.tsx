@@ -10,28 +10,6 @@ import {
 } from "@/lib/placement";
 import { PrintButton } from "../PrintButton";
 
-type ExportPreset = {
-  label: string;
-  width: number;
-  height: number;
-  unit: "mm" | "px";
-};
-
-const EXPORT_PRESETS: ExportPreset[] = [
-  { label: "A4", width: 297, height: 210, unit: "mm" },
-  { label: "A3", width: 420, height: 297, unit: "mm" },
-  { label: "A2", width: 594, height: 420, unit: "mm" },
-  { label: "A1", width: 841, height: 594, unit: "mm" },
-  { label: "A0", width: 1189, height: 841, unit: "mm" },
-  { label: "2A0", width: 1682, height: 1189, unit: "mm" },
-  { label: "4A0", width: 2378, height: 1682, unit: "mm" },
-  { label: "16:9", width: 1600, height: 900, unit: "px" },
-  { label: "16:10", width: 1600, height: 1000, unit: "px" },
-  { label: "Full HD", width: 1920, height: 1080, unit: "px" },
-  { label: "4K", width: 3840, height: 2160, unit: "px" },
-  { label: "8K", width: 7680, height: 4320, unit: "px" }
-];
-
 export function MarkerExportClient({
   projectName,
   marker,
@@ -45,22 +23,7 @@ export function MarkerExportClient({
   qrDataUrl: string;
   error: string;
 }) {
-  const [presetLabel, setPresetLabel] = useState("Custom mm");
-  const [customMm, setCustomMm] = useState({ width: marker.widthMm, height: marker.heightMm });
-  const [customPx, setCustomPx] = useState({ width: 1920, height: 1080 });
   const [pngStatus, setPngStatus] = useState("");
-
-  const exportSize = useMemo(() => {
-    if (presetLabel === "Custom mm") {
-      return { label: "Custom mm", ...customMm, unit: "mm" as const };
-    }
-
-    if (presetLabel === "Custom px") {
-      return { label: "Custom px", ...customPx, unit: "px" as const };
-    }
-
-    return EXPORT_PRESETS.find((preset) => preset.label === presetLabel) || EXPORT_PRESETS[3];
-  }, [customMm, customPx, presetLabel]);
 
   const svgMarkup = useMemo(
     () => buildMarkerSvg({ projectName, marker }),
@@ -72,33 +35,17 @@ export function MarkerExportClient({
     setPngStatus("Preparing PNG...");
 
     try {
-      const scale = exportSize.unit === "px" ? 1 : 4;
       const canvas = document.createElement("canvas");
-      canvas.width = Math.round(exportSize.width * scale);
-      canvas.height = Math.round(exportSize.height * scale);
+      canvas.width = 1600;
+      canvas.height = 1600;
       const context = canvas.getContext("2d");
 
       if (!context) {
         throw new Error("Canvas export is unavailable in this browser.");
       }
 
-      context.fillStyle = "#ffffff";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      context.strokeStyle = "#111827";
-      context.lineWidth = Math.max(2, Math.round(canvas.width * 0.002));
-      context.strokeRect(context.lineWidth / 2, context.lineWidth / 2, canvas.width - context.lineWidth, canvas.height - context.lineWidth);
-
       const markerImage = await loadImage(HIRO_MARKER_IMAGE_URL);
-      const layout = getHiroBoardLayout(canvas.width, canvas.height, marker);
-
-      context.fillStyle = "#1c1917";
-      context.textAlign = "center";
-      context.font = `800 ${layout.titleFontSize}px Arial`;
-      context.fillText(projectName, canvas.width / 2, layout.titleY);
-      context.drawImage(markerImage, layout.markerX, layout.markerY, layout.markerSize, layout.markerSize);
-      context.fillStyle = "#1c1917";
-      context.font = `700 ${layout.noteFontSize}px Arial`;
-      context.fillText("Track the large black marker. Keep the whole black border visible.", canvas.width / 2, layout.noteY);
+      context.drawImage(markerImage, 0, 0, canvas.width, canvas.height);
 
       const blob = await new Promise<Blob>((resolve, reject) => {
         canvas.toBlob((nextBlob) => {
@@ -177,30 +124,9 @@ export function MarkerExportClient({
           {pngStatus ? <p className="mt-3 text-sm font-semibold text-[var(--muted)]">{pngStatus}</p> : null}
 
           <section className="mt-6 rounded-lg border border-[var(--line)] bg-[var(--panel)] p-4">
-            <h2 className="text-sm font-black text-[var(--ink)]">Export preset</h2>
-            <select
-              value={presetLabel}
-              onChange={(event) => setPresetLabel(event.target.value)}
-              className="focus-ring mt-3 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-[var(--ink)]"
-            >
-              {EXPORT_PRESETS.map((preset) => (
-                <option key={preset.label} value={preset.label}>
-                  {preset.label}
-                </option>
-              ))}
-              <option value="Custom mm">Custom mm</option>
-              <option value="Custom px">Custom px</option>
-            </select>
-
-            {presetLabel === "Custom mm" ? (
-              <SizeInputs unit="mm" size={customMm} onChange={setCustomMm} />
-            ) : null}
-            {presetLabel === "Custom px" ? (
-              <SizeInputs unit="px" size={customPx} onChange={setCustomPx} />
-            ) : null}
-
+            <h2 className="text-sm font-black text-[var(--ink)]">Fixed marker export</h2>
             <p className="mt-3 text-sm font-semibold text-[var(--muted)]">
-              {exportSize.width} x {exportSize.height} {exportSize.unit}
+              200mm x 200mm HIRO marker. Print the SVG at 100% scale.
             </p>
           </section>
 
@@ -215,41 +141,6 @@ export function MarkerExportClient({
   );
 }
 
-function SizeInputs({
-  unit,
-  size,
-  onChange
-}: {
-  unit: "mm" | "px";
-  size: { width: number; height: number };
-  onChange: (size: { width: number; height: number }) => void;
-}) {
-  return (
-    <div className="mt-3 grid grid-cols-2 gap-2">
-      <label className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">
-        Width {unit}
-        <input
-          type="number"
-          min="1"
-          value={size.width}
-          onChange={(event) => onChange({ ...size, width: Number(event.target.value) || size.width })}
-          className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm text-[var(--ink)]"
-        />
-      </label>
-      <label className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">
-        Height {unit}
-        <input
-          type="number"
-          min="1"
-          value={size.height}
-          onChange={(event) => onChange({ ...size, height: Number(event.target.value) || size.height })}
-          className="focus-ring mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 text-sm text-[var(--ink)]"
-        />
-      </label>
-    </div>
-  );
-}
-
 function buildMarkerSvg({
   projectName,
   marker
@@ -260,39 +151,11 @@ function buildMarkerSvg({
   const geometry = getMarkerBoardGeometry(marker);
   const width = geometry.widthMm;
   const height = geometry.heightMm;
-  const layout = getHiroBoardLayout(width, height, marker);
+  void projectName;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
-  <rect width="100%" height="100%" fill="#ffffff"/>
-  <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#111827" stroke-width="${Math.max(1, Math.min(width, height) * 0.002)}"/>
-  <text x="${width / 2}" y="${layout.titleY}" text-anchor="middle" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${layout.titleFontSize}" font-weight="800">${escapeXml(projectName)}</text>
-  <image href="${escapeXml(HIRO_MARKER_IMAGE_URL)}" x="${layout.markerX}" y="${layout.markerY}" width="${layout.markerSize}" height="${layout.markerSize}" preserveAspectRatio="xMidYMid meet"/>
-  <text x="${width / 2}" y="${layout.noteY}" text-anchor="middle" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${layout.noteFontSize}" font-weight="700">Track the large black marker. Keep the whole black border visible.</text>
+  <image href="${escapeXml(HIRO_MARKER_IMAGE_URL)}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid meet"/>
 </svg>`;
-}
-
-function getHiroBoardLayout(width: number, height: number, marker: MarkerSettings) {
-  const geometry = getMarkerBoardGeometry(marker);
-  const scale = Math.min(width / geometry.widthMm, height / geometry.heightMm);
-  const boardWidth = geometry.widthMm * scale;
-  const boardHeight = geometry.heightMm * scale;
-  const boardX = (width - boardWidth) / 2;
-  const boardY = (height - boardHeight) / 2;
-  const markerSize = geometry.trackingMarkerRectMm.sizeMm * scale;
-  const shortSide = Math.min(boardWidth, boardHeight);
-  const margin = Math.max(shortSide * 0.06, 16);
-  const titleFontSize = Math.max(shortSide * 0.04, 12);
-  const noteFontSize = Math.max(shortSide * 0.022, 7);
-
-  return {
-    titleFontSize,
-    noteFontSize,
-    titleY: boardY + margin + titleFontSize,
-    noteY: boardY + boardHeight - margin,
-    markerSize,
-    markerX: boardX + geometry.trackingMarkerRectMm.xMm * scale,
-    markerY: boardY + geometry.trackingMarkerRectMm.yMm * scale
-  };
 }
 
 function loadImage(src: string) {

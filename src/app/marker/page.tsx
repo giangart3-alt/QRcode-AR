@@ -40,8 +40,7 @@ export default function MarkerPage() {
             </p>
             <p>
               Default physical size: <strong>{DEFAULT_MARKER_WIDTH_MM}mm x {DEFAULT_MARKER_HEIGHT_MM}mm</strong>.
-              If a project is saved with a different marker size, print or display at that
-              saved size.
+              Use this same square marker for desktop placement, export, and mobile AR.
             </p>
             <p>
               Keep the full outer black frame visible, flat, well lit, and free of glare.

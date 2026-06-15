@@ -1,4 +1,4 @@
-export const LEGACY_PLAYGROUND_IMAGE_URL = "/markers/playground.png";
+export const LEGACY_PLAYGROUND_IMAGE_URL = "/markers/hiro/hiro.png";
 export const HIRO_MARKER_ID = "hiro";
 export const HIRO_MARKER_IMAGE_URL = "/markers/hiro/hiro.png";
 export const HIRO_MARKER_PATTERN_URL = "/markers/hiro/hiro.patt";
@@ -8,8 +8,9 @@ export const TRACKING_MARKER_PNG_URL = HIRO_MARKER_IMAGE_URL;
 export const TRACKING_MARKER_PATTERN_URL = HIRO_MARKER_PATTERN_URL;
 export const MARKER_IMAGE_URL = HIRO_MARKER_IMAGE_URL;
 export const MARKER_PATTERN_URL = TRACKING_MARKER_PATTERN_URL;
-export const DEFAULT_MARKER_WIDTH_MM = 1000;
-export const DEFAULT_MARKER_HEIGHT_MM = 700;
+export const DEFAULT_MARKER_SIZE_MM = 200;
+export const DEFAULT_MARKER_WIDTH_MM = DEFAULT_MARKER_SIZE_MM;
+export const DEFAULT_MARKER_HEIGHT_MM = DEFAULT_MARKER_SIZE_MM;
 export const DEFAULT_MARKER_STYLE_ID = "technical-grid";
 export const DEFAULT_SCREEN_PHYSICAL_WIDTH_MM = 600;
 
@@ -18,9 +19,7 @@ export type MarkerOutputMode = "print" | "screen";
 export type TrackingMarkerType = "pattern";
 
 export const MARKER_STYLES: Array<{ id: MarkerStyleId; label: string }> = [
-  { id: "technical-grid", label: "Technical grid" },
-  { id: "checker", label: "Black/white checker" },
-  { id: "minimal", label: "Minimal high-contrast" }
+  { id: "technical-grid", label: "HIRO marker" }
 ];
 
 export type PlacementMetadata = {
@@ -129,37 +128,21 @@ export function createDefaultMarker(): MarkerSettings {
 }
 
 export function createMarkerSettings(input?: Partial<MarkerSettings>): MarkerSettings {
-  const boardStyle = normalizeMarkerStyleId(input?.boardStyle || input?.styleId);
-  const outputMode = input?.outputMode === "screen" ? "screen" : "print";
-  const normalizedScreen = normalizeScreenSettings(input?.screen);
-  const screen = outputMode === "screen" ? normalizedScreen : null;
-  const widthMm = outputMode === "screen"
-    ? normalizedScreen.physicalWidthMm
-    : positiveNumber(input?.widthMm, DEFAULT_MARKER_WIDTH_MM);
-  const heightMm = outputMode === "screen"
-    ? normalizedScreen.physicalHeightMm
-    : positiveNumber(input?.heightMm, DEFAULT_MARKER_HEIGHT_MM);
-  const trackingMarkerSizeOnBoardMm = normalizeTrackingMarkerSize(
-    input?.trackingMarkerSizeOnBoardMm,
-    widthMm,
-    heightMm
-  );
-  const trackingMarkerPositionOnBoard = normalizeTrackingMarkerPosition(
-    input?.trackingMarkerPositionOnBoard
-  );
-  const boardImageUrl = boardImageUrlForStyle(
-    boardStyle,
-    widthMm,
-    heightMm,
-    trackingMarkerSizeOnBoardMm,
-    trackingMarkerPositionOnBoard
-  );
+  void input;
+  const boardStyle = DEFAULT_MARKER_STYLE_ID;
+  const outputMode = "print";
+  const screen = null;
+  const widthMm = DEFAULT_MARKER_SIZE_MM;
+  const heightMm = DEFAULT_MARKER_SIZE_MM;
+  const trackingMarkerSizeOnBoardMm = DEFAULT_MARKER_SIZE_MM;
+  const trackingMarkerPositionOnBoard = { xMm: 0, yMm: 0 };
+  const boardImageUrl = HIRO_MARKER_IMAGE_URL;
 
   return {
     styleId: boardStyle,
     boardStyle,
     outputMode,
-    presetLabel: input?.presetLabel || (outputMode === "screen" ? "Full HD" : "Custom mm"),
+    presetLabel: "HIRO 200mm",
     imageUrl: boardImageUrl,
     boardImageUrl,
     patternUrl: TRACKING_MARKER_PATTERN_URL,
@@ -172,13 +155,13 @@ export function createMarkerSettings(input?: Partial<MarkerSettings>): MarkerSet
     trackingMarkerPatternUrl: TRACKING_MARKER_PATTERN_URL,
     trackingMarkerPositionOnBoard,
     trackingMarkerSizeOnBoardMm,
-    qrPlacement: normalizeQrPlacement(input?.qrPlacement),
+    qrPlacement: normalizeQrPlacement(null),
     screen,
     coordinateSystem: {
-      origin: "center of HIRO marker board",
-      xAxis: "left/right on board",
-      yAxis: "forward/back on board",
-      zAxis: "vertical height above board",
+      origin: "center of HIRO marker",
+      xAxis: "left/right on marker",
+      yAxis: "forward/back on marker",
+      zAxis: "vertical height above marker",
       units: "meters"
     }
   };
@@ -210,66 +193,8 @@ export function normalizePlacement(
 }
 
 export function normalizeMarker(marker: Partial<MarkerSettings> | null | undefined) {
-  const fallback = createDefaultMarker();
-  const boardStyle = normalizeMarkerStyleId(marker?.boardStyle || marker?.styleId);
-  const outputMode = marker?.outputMode === "screen" ? "screen" : "print";
-  const normalizedScreen = normalizeScreenSettings(marker?.screen);
-  const screen = outputMode === "screen" ? normalizedScreen : null;
-  const widthMm = outputMode === "screen"
-    ? normalizedScreen.physicalWidthMm
-    : positiveNumber(
-        marker?.widthMm ?? (marker as { markerWidthMm?: number } | null | undefined)?.markerWidthMm,
-        fallback.widthMm
-      );
-  const heightMm = outputMode === "screen"
-    ? normalizedScreen.physicalHeightMm
-    : positiveNumber(
-        marker?.heightMm ?? (marker as { markerHeightMm?: number } | null | undefined)?.markerHeightMm,
-        fallback.heightMm
-      );
-  const trackingMarkerSizeOnBoardMm = normalizeTrackingMarkerSize(
-    marker?.trackingMarkerSizeOnBoardMm,
-    widthMm,
-    heightMm
-  );
-  const trackingMarkerPositionOnBoard = normalizeTrackingMarkerPosition(
-    marker?.trackingMarkerPositionOnBoard
-  );
-  const boardImageUrl = boardImageUrlForStyle(
-    boardStyle,
-    widthMm,
-    heightMm,
-    trackingMarkerSizeOnBoardMm,
-    trackingMarkerPositionOnBoard
-  );
-
-  return {
-    styleId: boardStyle,
-    boardStyle,
-    outputMode,
-    presetLabel: marker?.presetLabel || fallback.presetLabel,
-    imageUrl: boardImageUrl,
-    boardImageUrl,
-    patternUrl: TRACKING_MARKER_PATTERN_URL,
-    widthMm,
-    heightMm,
-    trackingMarkerId: DEFAULT_TRACKING_MARKER_ID,
-    trackingMarkerType: "pattern",
-    trackingMarkerImageUrl: TRACKING_MARKER_IMAGE_URL,
-    trackingMarkerPngUrl: TRACKING_MARKER_PNG_URL,
-    trackingMarkerPatternUrl: TRACKING_MARKER_PATTERN_URL,
-    trackingMarkerPositionOnBoard,
-    trackingMarkerSizeOnBoardMm,
-    qrPlacement: normalizeQrPlacement(marker?.qrPlacement),
-    screen,
-    coordinateSystem: {
-      origin: marker?.coordinateSystem?.origin || "center of HIRO marker board",
-      xAxis: "left/right on board",
-      yAxis: "forward/back on board",
-      zAxis: "vertical height above board",
-      units: "meters" as const
-    }
-  } satisfies MarkerSettings;
+  void marker;
+  return createDefaultMarker();
 }
 
 export function screenPhysicalSizeFromPixels(
@@ -288,20 +213,20 @@ export function screenPhysicalSizeFromPixels(
 }
 
 export function markerImageUrlForStyle(styleId: string) {
+  void styleId;
   return boardImageUrlForStyle(styleId, DEFAULT_MARKER_WIDTH_MM, DEFAULT_MARKER_HEIGHT_MM);
 }
 
 export function getMarkerBoardImageUrl(marker: Pick<MarkerSettings, "boardImageUrl" | "imageUrl" | "boardStyle" | "widthMm" | "heightMm" | "trackingMarkerSizeOnBoardMm" | "trackingMarkerPositionOnBoard">) {
   void marker.boardImageUrl;
   void marker.imageUrl;
+  void marker.boardStyle;
+  void marker.widthMm;
+  void marker.heightMm;
+  void marker.trackingMarkerSizeOnBoardMm;
+  void marker.trackingMarkerPositionOnBoard;
 
-  return markerBoardImageDataUrlForStyle(
-    marker.boardStyle,
-    marker.widthMm,
-    marker.heightMm,
-    marker.trackingMarkerSizeOnBoardMm,
-    marker.trackingMarkerPositionOnBoard
-  );
+  return HIRO_MARKER_IMAGE_URL;
 }
 
 export function getTrackingMarkerPatternUrl(marker: Pick<MarkerSettings, "trackingMarkerPatternUrl" | "patternUrl">) {
@@ -331,15 +256,13 @@ export function markerBoardImageDataUrlForStyle(
   trackingMarkerSizeOnBoardMm = defaultTrackingMarkerSize(widthMm, heightMm),
   trackingMarkerPositionOnBoard = { xMm: 0, yMm: 0 }
 ) {
-  const svg = buildBoardSvg({
-    boardStyle: normalizeMarkerStyleId(styleId),
-    widthMm,
-    heightMm,
-    trackingMarkerSizeOnBoardMm,
-    trackingMarkerPositionOnBoard
-  });
+  void styleId;
+  void widthMm;
+  void heightMm;
+  void trackingMarkerSizeOnBoardMm;
+  void trackingMarkerPositionOnBoard;
 
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  return HIRO_MARKER_IMAGE_URL;
 }
 
 export function getMarkerBoardGeometry(
@@ -348,24 +271,11 @@ export function getMarkerBoardGeometry(
     "widthMm" | "heightMm" | "trackingMarkerSizeOnBoardMm" | "trackingMarkerPositionOnBoard"
   >
 ): MarkerBoardGeometry {
-  const widthMm = positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM);
-  const heightMm = positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM);
-  const requestedTrackingSizeMm = normalizeTrackingMarkerSize(
-    marker.trackingMarkerSizeOnBoardMm,
-    widthMm,
-    heightMm
-  );
-  const trackingMarkerSizeMm = Math.min(
-    requestedTrackingSizeMm,
-    Math.max(Math.min(widthMm, heightMm), 1)
-  );
-  const halfAvailableX = Math.max(widthMm / 2 - trackingMarkerSizeMm / 2, 0);
-  const halfAvailableY = Math.max(heightMm / 2 - trackingMarkerSizeMm / 2, 0);
-  const requestedPosition = normalizeTrackingMarkerPosition(marker.trackingMarkerPositionOnBoard);
-  const trackingMarkerCenterMm = {
-    xMm: clampNumber(requestedPosition.xMm, -halfAvailableX, halfAvailableX),
-    yMm: clampNumber(requestedPosition.yMm, -halfAvailableY, halfAvailableY)
-  };
+  void marker;
+  const widthMm = DEFAULT_MARKER_SIZE_MM;
+  const heightMm = DEFAULT_MARKER_SIZE_MM;
+  const trackingMarkerSizeMm = DEFAULT_MARKER_SIZE_MM;
+  const trackingMarkerCenterMm = { xMm: 0, yMm: 0 };
 
   return {
     widthMm,
@@ -404,30 +314,15 @@ export function buildBoardSvg({
   trackingMarkerSizeOnBoardMm: number;
   trackingMarkerPositionOnBoard: { xMm: number; yMm: number };
 }) {
-  const geometry = getMarkerBoardGeometry({
-    widthMm,
-    heightMm,
-    trackingMarkerSizeOnBoardMm,
-    trackingMarkerPositionOnBoard
-  });
-  const width = geometry.widthMm;
-  const height = geometry.heightMm;
-  const padding = Math.max(Math.min(width, height) * 0.035, 10);
-  const trackingSize = geometry.trackingMarkerRectMm.sizeMm;
-  const trackingX = geometry.trackingMarkerRectMm.xMm;
-  const trackingY = geometry.trackingMarkerRectMm.yMm;
-  const labelFontSize = Math.max(Math.min(width, height) * 0.025, 10);
-  const labelY = Math.min(height - padding, trackingY + trackingSize + labelFontSize * 1.7);
-  const boardPattern = buildBoardPattern(boardStyle, width, height, padding);
+  void boardStyle;
+  void widthMm;
+  void heightMm;
+  void trackingMarkerSizeOnBoardMm;
+  void trackingMarkerPositionOnBoard;
+  const size = DEFAULT_MARKER_SIZE_MM;
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${roundSvg(width)}mm" height="${roundSvg(height)}mm" viewBox="0 0 ${roundSvg(width)} ${roundSvg(height)}">
-  <rect width="100%" height="100%" fill="#ffffff"/>
-  ${boardPattern}
-  <g transform="translate(${roundSvg(trackingX)} ${roundSvg(trackingY)}) scale(${roundSvg(trackingSize / 256)})">
-    ${trackingMarkerGeometry()}
-  </g>
-  <text x="${roundSvg(width / 2)}" y="${roundSvg(labelY)}" text-anchor="middle" fill="#111827" font-family="Arial, Helvetica, sans-serif" font-size="${roundSvg(labelFontSize)}" font-weight="800">AR tracking marker</text>
-  <text x="${roundSvg(width - padding)}" y="${roundSvg(height - padding)}" text-anchor="end" fill="#4b5563" font-family="Arial, Helvetica, sans-serif" font-size="${roundSvg(Math.max(labelFontSize * 0.64, 7))}" font-weight="700">HIRO marker board</text>
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}mm" height="${size}mm" viewBox="0 0 ${size} ${size}">
+  <image href="${HIRO_MARKER_IMAGE_URL}" x="0" y="0" width="${size}" height="${size}" preserveAspectRatio="xMidYMid meet"/>
 </svg>`;
 }
 
@@ -451,10 +346,6 @@ export function radiansToDegrees(value: number) {
   return (value * 180) / Math.PI;
 }
 
-function normalizeMarkerStyleId(value: unknown): MarkerStyleId {
-  return value === "checker" || value === "minimal" ? value : DEFAULT_MARKER_STYLE_ID;
-}
-
 function finiteNumber(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -465,40 +356,10 @@ function positiveNumber(value: unknown, fallback: number) {
     : fallback;
 }
 
-function normalizeScreenSettings(screen: Partial<NonNullable<MarkerSettings["screen"]>> | null | undefined) {
-  const widthPx = positiveNumber(screen?.widthPx, 1920);
-  const heightPx = positiveNumber(screen?.heightPx, 1080);
-  const physical = screenPhysicalSizeFromPixels(
-    widthPx,
-    heightPx,
-    positiveNumber(screen?.physicalWidthMm, DEFAULT_SCREEN_PHYSICAL_WIDTH_MM)
-  );
-
-  return {
-    widthPx,
-    heightPx,
-    physicalWidthMm: positiveNumber(screen?.physicalWidthMm, physical.widthMm),
-    physicalHeightMm: positiveNumber(screen?.physicalHeightMm, physical.heightMm)
-  };
-}
-
-function normalizeTrackingMarkerSize(value: unknown, widthMm: number, heightMm: number) {
-  return positiveNumber(value, defaultTrackingMarkerSize(widthMm, heightMm));
-}
-
 function defaultTrackingMarkerSize(widthMm: number, heightMm: number) {
-  const shortSide = Math.max(Math.min(widthMm, heightMm), 1);
-  const reliableMinimum = Math.min(shortSide * 0.62, 70);
-  return Math.round(Math.min(Math.max(shortSide * 0.36, reliableMinimum), shortSide * 0.62));
-}
-
-function normalizeTrackingMarkerPosition(
-  position: MarkerSettings["trackingMarkerPositionOnBoard"] | null | undefined
-) {
-  return {
-    xMm: finiteNumber(position?.xMm, 0),
-    yMm: finiteNumber(position?.yMm, 0)
-  };
+  void widthMm;
+  void heightMm;
+  return DEFAULT_MARKER_SIZE_MM;
 }
 
 function normalizeQrPlacement(placement: MarkerSettings["qrPlacement"] | null | undefined) {
@@ -506,67 +367,6 @@ function normalizeQrPlacement(placement: MarkerSettings["qrPlacement"] | null | 
     corner: "right" as const,
     sizeRatio: positiveNumber(placement?.sizeRatio, 0.18)
   };
-}
-
-function clampNumber(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function buildBoardPattern(styleId: MarkerStyleId, width: number, height: number, padding: number) {
-  if (styleId === "checker") {
-    return buildCheckerBoard(width, height, padding);
-  }
-
-  if (styleId === "minimal") {
-    return buildMinimalBoard(width, height, padding);
-  }
-
-  return buildTechnicalBoard(width, height, padding);
-}
-
-function buildTechnicalBoard(width: number, height: number, padding: number) {
-  const verticalLines = Array.from({ length: 11 }, (_, index) => {
-    const x = (width * index) / 10;
-    const weight = index === 5 ? 1.8 : 0.7;
-    return `<line x1="${roundSvg(x)}" y1="${roundSvg(padding)}" x2="${roundSvg(x)}" y2="${roundSvg(height - padding)}" stroke="#cbd5e1" stroke-width="${weight}"/>`;
-  }).join("");
-  const horizontalLines = Array.from({ length: 9 }, (_, index) => {
-    const y = (height * index) / 8;
-    const weight = index === 4 ? 1.8 : 0.7;
-    return `<line x1="${roundSvg(padding)}" y1="${roundSvg(y)}" x2="${roundSvg(width - padding)}" y2="${roundSvg(y)}" stroke="#cbd5e1" stroke-width="${weight}"/>`;
-  }).join("");
-  const centerSize = Math.min(width, height) * 0.075;
-
-  return `<rect x="${roundSvg(padding)}" y="${roundSvg(padding)}" width="${roundSvg(width - padding * 2)}" height="${roundSvg(height - padding * 2)}" fill="#f8fafc" stroke="#111827" stroke-width="${roundSvg(Math.max(padding * 0.18, 4))}"/>
-  ${verticalLines}
-  ${horizontalLines}
-  <line x1="${roundSvg(width / 2 - centerSize)}" y1="${roundSvg(height / 2)}" x2="${roundSvg(width / 2 + centerSize)}" y2="${roundSvg(height / 2)}" stroke="#ef4444" stroke-width="${roundSvg(Math.max(padding * 0.1, 2))}"/>
-  <line x1="${roundSvg(width / 2)}" y1="${roundSvg(height / 2 - centerSize)}" x2="${roundSvg(width / 2)}" y2="${roundSvg(height / 2 + centerSize)}" stroke="#22c55e" stroke-width="${roundSvg(Math.max(padding * 0.1, 2))}"/>`;
-}
-
-function buildCheckerBoard(width: number, height: number, padding: number) {
-  const columns = 16;
-  const rows = Math.max(8, Math.round(columns * (height / width)));
-  const innerWidth = width - padding * 2;
-  const innerHeight = height - padding * 2;
-  const cells = Array.from({ length: rows }).map((_, y) =>
-    Array.from({ length: columns }).map((__, x) =>
-      (x + y) % 2 === 0
-        ? `<rect x="${roundSvg(padding + (innerWidth * x) / columns)}" y="${roundSvg(padding + (innerHeight * y) / rows)}" width="${roundSvg(innerWidth / columns)}" height="${roundSvg(innerHeight / rows)}" fill="#111827"/>`
-        : ""
-    ).join("")
-  ).join("");
-
-  return `<rect x="${roundSvg(padding)}" y="${roundSvg(padding)}" width="${roundSvg(innerWidth)}" height="${roundSvg(innerHeight)}" fill="#ffffff" stroke="#111827" stroke-width="${roundSvg(Math.max(padding * 0.18, 4))}"/>
-  <g opacity="0.9">${cells}</g>
-  <rect x="${roundSvg(width * 0.38)}" y="${roundSvg(height * 0.32)}" width="${roundSvg(width * 0.24)}" height="${roundSvg(height * 0.36)}" fill="#ffffff" opacity="0.92"/>`;
-}
-
-function buildMinimalBoard(width: number, height: number, padding: number) {
-  return `<rect x="${roundSvg(padding)}" y="${roundSvg(padding)}" width="${roundSvg(width - padding * 2)}" height="${roundSvg(height - padding * 2)}" fill="#ffffff" stroke="#111827" stroke-width="${roundSvg(Math.max(padding * 0.2, 5))}"/>
-  <rect x="${roundSvg(padding * 1.8)}" y="${roundSvg(padding * 1.8)}" width="${roundSvg(width - padding * 3.6)}" height="${roundSvg(height - padding * 3.6)}" fill="none" stroke="#111827" stroke-width="${roundSvg(Math.max(padding * 0.06, 1.5))}"/>
-  <line x1="${roundSvg(width / 2)}" y1="${roundSvg(padding * 2)}" x2="${roundSvg(width / 2)}" y2="${roundSvg(height - padding * 2)}" stroke="#e5e7eb" stroke-width="${roundSvg(Math.max(padding * 0.06, 1.5))}"/>
-  <line x1="${roundSvg(padding * 2)}" y1="${roundSvg(height / 2)}" x2="${roundSvg(width - padding * 2)}" y2="${roundSvg(height / 2)}" stroke="#e5e7eb" stroke-width="${roundSvg(Math.max(padding * 0.06, 1.5))}"/>`;
 }
 
 function trackingMarkerGeometry() {
@@ -578,8 +378,4 @@ function trackingMarkerGeometry() {
   <rect x="148" y="86" width="34" height="94" fill="#000000"/>
   <rect x="72" y="144" width="96" height="34" fill="#000000"/>
   <rect x="184" y="164" width="24" height="44" fill="#000000"/>`;
-}
-
-function roundSvg(value: number) {
-  return String(Math.round(value * 1000) / 1000);
 }

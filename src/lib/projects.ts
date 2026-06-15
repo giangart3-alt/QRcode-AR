@@ -521,9 +521,8 @@ export function computeDisplayedScale(scene: Pick<
   SceneMetadata,
   "scaleMode" | "architecturalScale" | "normalizedScale"
 >) {
-  if (scene.scaleMode === "architectural") {
-    return 1 / positiveNumber(scene.architecturalScale, 100);
-  }
+  void scene.scaleMode;
+  void scene.architecturalScale;
 
   return positiveNumber(scene.normalizedScale, 1);
 }
@@ -597,7 +596,8 @@ function normalizeScene(
 }
 
 function normalizeScaleMode(value: unknown): ScaleMode {
-  return value === "architectural" ? "architectural" : "fit";
+  void value;
+  return "fit";
 }
 
 function finiteNumber(value: unknown, fallback: number) {

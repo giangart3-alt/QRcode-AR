@@ -395,22 +395,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       const modelAnchor = new THREE.Group();
       modelAnchor.visible = true;
       markerRoot.add(modelAnchor);
-
-      const axisCorrectionGroup = new THREE.Group();
-      axisCorrectionGroup.name = "editor-to-ar-axis-correction";
-      axisCorrectionGroup.visible = true;
-      modelAnchor.add(axisCorrectionGroup);
-
-      const boardReferenceGroup = new THREE.Group();
-      boardReferenceGroup.name = "detected-hiro-to-editor-board-reference";
-      boardReferenceGroup.position.set(
-        markerGeometry.boardOffsetFromTrackingCenterM.xM,
-        0,
-        markerGeometry.boardOffsetFromTrackingCenterM.yM
-      );
-      boardReferenceGroup.visible = true;
-      axisCorrectionGroup.add(boardReferenceGroup);
-      patchRuntimeStatus({ axisCorrection: axisCorrectionDebug(axisCorrectionGroup, boardReferenceGroup, marker) });
+      patchRuntimeStatus({ axisCorrection: axisCorrectionDebug(modelAnchor, marker) });
 
       const arToolkitSource = new window.THREEx.ArToolkitSource({
         sourceType: "webcam",
@@ -562,12 +547,11 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
             "ar"
           );
           applyRuntimeSceneTransform(model, runtimeTransform);
-          boardReferenceGroup.add(model);
+          modelAnchor.add(model);
           const debugTransform = runtimeTransformDebug(
             runtimeTransform,
             activeScene,
-            axisCorrectionGroup,
-            boardReferenceGroup,
+            modelAnchor,
             marker,
             model
           );
@@ -730,8 +714,7 @@ function getActiveSceneForClient(project: ProjectMetadata): SceneMetadata | null
 function runtimeTransformDebug(
   transform: SceneRuntimeTransform,
   scene: SceneMetadata,
-  axisCorrectionGroup: THREE.Group,
-  boardReferenceGroup: THREE.Group,
+  markerReferenceGroup: THREE.Group,
   marker: MarkerSettings,
   model: THREE.Object3D
 ) {
@@ -757,7 +740,7 @@ function runtimeTransformDebug(
       rotationDeg: eulerDegreesDebug(transform.rotation),
       scale: roundForDebug(transform.scale)
     },
-    axisCorrection: axisCorrectionDebug(axisCorrectionGroup, boardReferenceGroup, marker),
+    axisCorrection: axisCorrectionDebug(markerReferenceGroup, marker),
     finalModelTransform: modelTransformDebug(model)
   };
 }
@@ -770,19 +753,19 @@ function placementDebug(scene: SceneMetadata) {
   };
 }
 
-function axisCorrectionDebug(group: THREE.Group, boardReferenceGroup: THREE.Group, marker: MarkerSettings) {
+function axisCorrectionDebug(group: THREE.Group, marker: MarkerSettings) {
   const markerGeometry = getMarkerBoardGeometry(marker);
 
   return {
-    applied: true,
-    note: "AR tracks the HIRO square; this group restores the desktop editor board origin before applying the saved model transform.",
+    applied: false,
+    note: "The detected HIRO marker is the full desktop reference surface; no marker offset correction is applied.",
     groupPositionM: vectorDebug(group.position),
     groupRotationRad: eulerDebug(group.rotation),
     groupRotationDeg: eulerDegreesDebug(group.rotation),
     groupScale: vectorDebug(group.scale),
-    boardReferencePositionM: vectorDebug(boardReferenceGroup.position),
-    boardReferenceRotationRad: eulerDebug(boardReferenceGroup.rotation),
-    boardReferenceScale: vectorDebug(boardReferenceGroup.scale),
+    boardReferencePositionM: vectorDebug(group.position),
+    boardReferenceRotationRad: eulerDebug(group.rotation),
+    boardReferenceScale: vectorDebug(group.scale),
     boardOffsetFromTrackingCenterM: {
       xM: roundForDebug(markerGeometry.boardOffsetFromTrackingCenterM.xM),
       yM: roundForDebug(markerGeometry.boardOffsetFromTrackingCenterM.yM)
