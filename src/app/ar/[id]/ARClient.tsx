@@ -11,8 +11,11 @@ import {
   HIRO_MARKER_PATTERN_URL,
   mmToMeters
 } from "@/lib/placement";
-import { appPositionMmToThreeMeters, appRotationDegreesToThreeRadians } from "@/lib/coordinates";
-import { computeBaseFitScaleFromObject, computeSceneDisplayScale } from "@/lib/scene-transform";
+import {
+  applyRuntimeSceneTransform,
+  computeSceneTransformForRuntime,
+  type SceneRuntimeTransform
+} from "@/lib/scene-transform";
 import type { MarkerSettings } from "@/lib/placement";
 import type { ProjectMetadata, SceneMetadata } from "@/lib/projects";
 import { loadGltfModel } from "@/lib/three-gltf";
@@ -52,6 +55,12 @@ type PublicStatus =
   | "model loaded"
   | "model error";
 
+type VectorDebug = {
+  x: number;
+  y: number;
+  z: number;
+};
+
 type RuntimeStatus = {
   projectLoading: boolean;
   projectLoaded: boolean;
@@ -75,10 +84,47 @@ type RuntimeStatus = {
     depthM: number;
   } | null;
   markerDimensions: {
+    widthMm: number;
+    heightMm: number;
     widthM: number;
     heightM: number;
+    trackingSizeMm: number;
     trackingSizeM: number;
   };
+  appPlacement: {
+    positionMm: VectorDebug;
+    rotationDeg: VectorDebug;
+    placementScale: number;
+  } | null;
+  scaleDebug: {
+    scaleMode: string;
+    normalizedScale: number;
+    architecturalScale: number;
+    baseFitScale: number;
+    finalScale: number;
+    boundsValid: boolean;
+    scaleFallbackReason: string;
+  } | null;
+  runtimeTransform: {
+    positionM: VectorDebug;
+    rotationRad: VectorDebug;
+    rotationDeg: VectorDebug;
+    scale: number;
+  } | null;
+  axisCorrection: {
+    applied: boolean;
+    note: string;
+    groupPositionM: VectorDebug;
+    groupRotationRad: VectorDebug;
+    groupRotationDeg: VectorDebug;
+    groupScale: VectorDebug;
+  } | null;
+  finalModelTransform: {
+    positionM: VectorDebug;
+    rotationRad: VectorDebug;
+    rotationDeg: VectorDebug;
+    scale: VectorDebug;
+  } | null;
   lastError: string;
 };
 
@@ -105,10 +151,18 @@ const INITIAL_STATUS: RuntimeStatus = {
   scaleMode: "",
   modelDimensions: null,
   markerDimensions: {
+    widthMm: DEFAULT_MARKER_WIDTH_MM,
+    heightMm: DEFAULT_MARKER_HEIGHT_MM,
     widthM: mmToMeters(DEFAULT_MARKER_WIDTH_MM),
     heightM: mmToMeters(DEFAULT_MARKER_HEIGHT_MM),
-    trackingSizeM: 1
+    trackingSizeMm: Math.min(DEFAULT_MARKER_WIDTH_MM, DEFAULT_MARKER_HEIGHT_MM),
+    trackingSizeM: mmToMeters(Math.min(DEFAULT_MARKER_WIDTH_MM, DEFAULT_MARKER_HEIGHT_MM))
   },
+  appPlacement: null,
+  scaleDebug: null,
+  runtimeTransform: null,
+  axisCorrection: null,
+  finalModelTransform: null,
   lastError: ""
 };
 
@@ -165,6 +219,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         modelPathname: selectedScene?.modelPathname || "",
         scaleMode: selectedScene?.scaleMode || "",
         markerDimensions: markerDimensions(result.project.marker),
+        appPlacement: selectedScene ? placementDebug(selectedScene) : null,
         lastError: "",
         modelError: ""
       });
@@ -201,7 +256,6 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     let markerWasSeen = false;
     let lastSeen = 0;
     let lastTrackingState = "";
-    let modelLoaded = false;
 
     async function start() {
       setPublicStatus("camera loading");
@@ -217,7 +271,12 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         computedScale: null,
         finalScaleApplied: null,
         modelDimensions: null,
-        markerDimensions: markerDimensions(marker)
+        markerDimensions: markerDimensions(marker),
+        appPlacement: selectedScene ? placementDebug(selectedScene) : null,
+        scaleDebug: null,
+        runtimeTransform: null,
+        axisCorrection: null,
+        finalModelTransform: null
       });
 
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -303,6 +362,12 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       const modelAnchor = new THREE.Group();
       modelAnchor.visible = true;
       markerRoot.add(modelAnchor);
+
+      const axisCorrectionGroup = new THREE.Group();
+      axisCorrectionGroup.name = "editor-to-ar-axis-correction";
+      axisCorrectionGroup.visible = true;
+      modelAnchor.add(axisCorrectionGroup);
+      patchRuntimeStatus({ axisCorrection: axisCorrectionDebug(axisCorrectionGroup) });
 
       const arToolkitSource = new window.THREEx.ArToolkitSource({
         sourceType: "webcam",
@@ -398,11 +463,6 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         lastTrackingState = nextState;
         patchRuntimeStatus({ markerFound: nextState === "marker found" });
 
-        if (nextState === "marker found" && modelLoaded) {
-          setPublicStatus("model loaded");
-          return;
-        }
-
         setPublicStatus(nextState);
       }
 
@@ -449,9 +509,23 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           const gltf = await loadGltfModel(activeScene.modelUrl);
           if (stopped) return;
 
-          const prepared = prepareModelForAr(gltf.scene, activeScene, marker);
-          modelAnchor.add(prepared.root);
-          modelLoaded = true;
+          const model = gltf.scene;
+          forceVisibleModel(model);
+
+          const runtimeTransform = computeSceneTransformForRuntime(
+            model,
+            activeScene,
+            marker,
+            "ar"
+          );
+          applyRuntimeSceneTransform(model, runtimeTransform);
+          axisCorrectionGroup.add(model);
+          const debugTransform = runtimeTransformDebug(
+            runtimeTransform,
+            activeScene,
+            axisCorrectionGroup,
+            model
+          );
 
           patchRuntimeStatus({
             selectedSceneId: activeScene.id,
@@ -462,18 +536,26 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
             modelLoaded: true,
             modelError: "",
             modelAttachedToMarker: true,
-            computedScale: prepared.computedScale,
-            finalScaleApplied: prepared.finalScaleApplied,
+            computedScale: debugTransform.scaleDebug.finalScale,
+            finalScaleApplied: debugTransform.scaleDebug.finalScale,
             scaleMode: activeScene.scaleMode,
-            modelDimensions: prepared.modelDimensions,
+            modelDimensions: {
+              widthM: debugTransform.modelDimensions.widthM,
+              heightM: debugTransform.modelDimensions.heightM,
+              depthM: debugTransform.modelDimensions.depthM
+            },
             markerDimensions: markerDimensions(marker),
-            lastError: prepared.usedScaleFallback ? "Saved scale was unsafe; visible fit scale applied." : ""
+            appPlacement: debugTransform.appPlacement,
+            scaleDebug: debugTransform.scaleDebug,
+            runtimeTransform: debugTransform.runtimeTransform,
+            axisCorrection: debugTransform.axisCorrection,
+            finalModelTransform: debugTransform.finalModelTransform,
+            lastError: runtimeTransform.metrics.scaleFallbackReason || ""
           });
 
-          setPublicStatus(markerWasSeen ? "model loaded" : "marker searching");
+          setPublicStatus(markerWasSeen ? "marker found" : "marker searching");
         } catch (caught) {
           const errorMessage = caught instanceof Error ? caught.message : "Unable to load GLB model.";
-          modelLoaded = false;
           setPublicStatus("model error");
           patchRuntimeStatus({
             modelLoading: false,
@@ -571,6 +653,11 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
                 modelDimensions: runtimeStatus.modelDimensions,
                 markerDimensions: runtimeStatus.markerDimensions,
                 scaleMode: runtimeStatus.scaleMode,
+                appPlacement: runtimeStatus.appPlacement,
+                scaleDebug: runtimeStatus.scaleDebug,
+                runtimeTransform: runtimeStatus.runtimeTransform,
+                axisCorrection: runtimeStatus.axisCorrection,
+                finalModelTransform: runtimeStatus.finalModelTransform,
                 computedScale: runtimeStatus.computedScale,
                 finalScaleApplied: runtimeStatus.finalScaleApplied,
                 trackingMarkerId: HIRO_MARKER_ID,
@@ -595,112 +682,65 @@ function getActiveSceneForClient(project: ProjectMetadata): SceneMetadata | null
   );
 }
 
-function prepareModelForAr(
-  model: THREE.Object3D,
+function runtimeTransformDebug(
+  transform: SceneRuntimeTransform,
   scene: SceneMetadata,
-  marker: MarkerSettings
+  axisCorrectionGroup: THREE.Group,
+  model: THREE.Object3D
 ) {
-  forceVisibleModel(model);
-
-  const root = new THREE.Group();
-  root.visible = true;
-  root.add(model);
-
-  const sourceBox = validBox(new THREE.Box3().setFromObject(model));
-  const sourceSize = sourceBox.getSize(new THREE.Vector3());
-  const sourceCenter = sourceBox.getCenter(new THREE.Vector3());
-
-  model.position.set(
-    -sourceCenter.x,
-    -sourceBox.min.y,
-    -sourceCenter.z
-  );
-  model.updateMatrixWorld(true);
-  root.updateMatrixWorld(true);
-
-  const normalizedBox = validBox(new THREE.Box3().setFromObject(root));
-  const normalizedSize = normalizedBox.getSize(new THREE.Vector3());
-  const fit = computeBaseFitScaleFromObject(root, {
-    widthMm: positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM),
-    heightMm: positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM)
-  });
-  const scale = computeSafeArScale(scene, fit, marker);
-
-  applySafeArTransform(root, scene, marker, scale.finalScaleApplied);
-
   return {
-    root,
-    computedScale: scale.computedScale,
-    finalScaleApplied: scale.finalScaleApplied,
-    usedScaleFallback: scale.usedFallback,
     modelDimensions: {
-      widthM: roundForDebug(normalizedSize.x || sourceSize.x),
-      heightM: roundForDebug(normalizedSize.y || sourceSize.y),
-      depthM: roundForDebug(normalizedSize.z || sourceSize.z)
-    }
+      widthM: roundForDebug(transform.metrics.modelWidthM),
+      heightM: roundForDebug(transform.metrics.modelHeightM),
+      depthM: roundForDebug(transform.metrics.modelDepthM)
+    },
+    appPlacement: placementDebug(scene),
+    scaleDebug: {
+      scaleMode: scene.scaleMode,
+      normalizedScale: roundForDebug(finiteNumber(scene.normalizedScale, 1)),
+      architecturalScale: roundForDebug(finiteNumber(scene.architecturalScale, 100)),
+      baseFitScale: roundForDebug(transform.metrics.baseFitScale),
+      finalScale: roundForDebug(transform.scale),
+      boundsValid: transform.metrics.boundsValid,
+      scaleFallbackReason: transform.metrics.scaleFallbackReason || ""
+    },
+    runtimeTransform: {
+      positionM: vectorDebug(transform.position),
+      rotationRad: eulerDebug(transform.rotation),
+      rotationDeg: eulerDegreesDebug(transform.rotation),
+      scale: roundForDebug(transform.scale)
+    },
+    axisCorrection: axisCorrectionDebug(axisCorrectionGroup),
+    finalModelTransform: modelTransformDebug(model)
   };
 }
 
-function computeSafeArScale(
-  scene: SceneMetadata,
-  fit: {
-    modelWidthM: number;
-    modelDepthM: number;
-    baseFitScale: number;
-  },
-  marker: MarkerSettings
-) {
-  const markerWidthM = Math.max(mmToMeters(positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM)), 0.001);
-  const markerHeightM = Math.max(mmToMeters(positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM)), 0.001);
-  const markerShortM = Math.min(markerWidthM, markerHeightM);
-  const markerLongM = Math.max(markerWidthM, markerHeightM);
-  const fallbackScale = positiveNumber(fit.baseFitScale, 1);
-  const computedScale = computeSceneDisplayScale(scene, fallbackScale);
-  const modelFootprint = Math.max(fit.modelWidthM, fit.modelDepthM, 0.001);
-  const finalFootprint = modelFootprint * computedScale;
-  const minVisibleFootprint = Math.max(markerShortM * 0.04, 0.04);
-  const maxVisibleFootprint = Math.max(markerLongM * 6, 3);
-  const unsafe =
-    !Number.isFinite(computedScale) ||
-    computedScale <= 0 ||
-    finalFootprint < minVisibleFootprint ||
-    finalFootprint > maxVisibleFootprint;
-
+function placementDebug(scene: SceneMetadata) {
   return {
-    computedScale: roundForDebug(computedScale),
-    finalScaleApplied: roundForDebug(unsafe ? fallbackScale : computedScale),
-    usedFallback: unsafe
+    positionMm: vectorDebug(scene.placement.position),
+    rotationDeg: vectorDebug(scene.placement.rotation),
+    placementScale: roundForDebug(finiteNumber(scene.placement.scale, 1))
   };
 }
 
-function applySafeArTransform(
-  root: THREE.Object3D,
-  scene: SceneMetadata,
-  marker: MarkerSettings,
-  scale: number
-) {
-  const markerMaxM = Math.max(
-    mmToMeters(positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM)),
-    mmToMeters(positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM))
-  );
-  const position = scene.placement?.position || { x: 0, y: 0, z: 0 };
-  const safePosition = {
-    x: clampAppMm(position.x, markerMaxM),
-    y: clampAppMm(position.y, markerMaxM),
-    z: clampHeightMm(position.z, markerMaxM)
+function axisCorrectionDebug(group: THREE.Group) {
+  return {
+    applied: false,
+    note: "Identity correction; AR and editor both use Three.js X/Z for the board plane and Y-up for height.",
+    groupPositionM: vectorDebug(group.position),
+    groupRotationRad: eulerDebug(group.rotation),
+    groupRotationDeg: eulerDegreesDebug(group.rotation),
+    groupScale: vectorDebug(group.scale)
   };
-  const rotation = scene.placement?.rotation || { x: 0, y: 0, z: 0 };
-  const safeRotation = {
-    x: finiteNumber(rotation.x, 0),
-    y: finiteNumber(rotation.y, 0),
-    z: finiteNumber(rotation.z, 0)
-  };
+}
 
-  root.position.copy(appPositionMmToThreeMeters(safePosition));
-  root.rotation.copy(appRotationDegreesToThreeRadians(safeRotation));
-  root.scale.setScalar(positiveNumber(scale, 1));
-  root.visible = true;
-  root.updateMatrixWorld(true);
+function modelTransformDebug(model: THREE.Object3D) {
+  return {
+    positionM: vectorDebug(model.position),
+    rotationRad: eulerDebug(model.rotation),
+    rotationDeg: eulerDegreesDebug(model.rotation),
+    scale: vectorDebug(model.scale)
+  };
 }
 
 function forceVisibleModel(root: THREE.Object3D) {
@@ -776,14 +816,21 @@ function disposeObject(root: THREE.Object3D) {
 }
 
 function markerDimensions(marker: MarkerSettings) {
+  const widthMm = positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM);
+  const heightMm = positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM);
+  const trackingSizeMm = safeTrackingMarkerSizeMm(marker);
+
   return {
-    widthM: roundForDebug(mmToMeters(positiveNumber(marker.widthMm, DEFAULT_MARKER_WIDTH_MM))),
-    heightM: roundForDebug(mmToMeters(positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM))),
+    widthMm: roundForDebug(widthMm),
+    heightMm: roundForDebug(heightMm),
+    widthM: roundForDebug(mmToMeters(widthMm)),
+    heightM: roundForDebug(mmToMeters(heightMm)),
+    trackingSizeMm: roundForDebug(trackingSizeMm),
     trackingSizeM: roundForDebug(safeTrackingMarkerSizeMeters(marker))
   };
 }
 
-function safeTrackingMarkerSizeMeters(marker: MarkerSettings) {
+function safeTrackingMarkerSizeMm(marker: MarkerSettings) {
   const sizeMm = positiveNumber(
     marker.trackingMarkerSizeOnBoardMm,
     Math.min(
@@ -791,37 +838,11 @@ function safeTrackingMarkerSizeMeters(marker: MarkerSettings) {
       positiveNumber(marker.heightMm, DEFAULT_MARKER_HEIGHT_MM)
     )
   );
-  return Math.max(mmToMeters(sizeMm), 0.05);
+  return Math.max(sizeMm, 50);
 }
 
-function validBox(box: THREE.Box3) {
-  if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) {
-    return new THREE.Box3(
-      new THREE.Vector3(-0.5, 0, -0.5),
-      new THREE.Vector3(0.5, 1, 0.5)
-    );
-  }
-
-  if (box.isEmpty()) {
-    return new THREE.Box3(
-      new THREE.Vector3(-0.5, 0, -0.5),
-      new THREE.Vector3(0.5, 1, 0.5)
-    );
-  }
-
-  return box;
-}
-
-function clampAppMm(value: number, markerMaxM: number) {
-  const meters = mmToMeters(finiteNumber(value, 0));
-  if (Math.abs(meters) > markerMaxM * 4) return 0;
-  return value;
-}
-
-function clampHeightMm(value: number, markerMaxM: number) {
-  const meters = mmToMeters(finiteNumber(value, 0));
-  if (meters < -markerMaxM || meters > markerMaxM * 6) return 0;
-  return value;
+function safeTrackingMarkerSizeMeters(marker: MarkerSettings) {
+  return mmToMeters(safeTrackingMarkerSizeMm(marker));
 }
 
 function positiveNumber(value: number | undefined, fallback: number) {
@@ -834,4 +855,24 @@ function finiteNumber(value: number | undefined, fallback: number) {
 
 function roundForDebug(value: number) {
   return Number.isFinite(value) ? Math.round(value * 100000) / 100000 : value;
+}
+
+function vectorDebug(vector: { x: number; y: number; z: number }) {
+  return {
+    x: roundForDebug(finiteNumber(vector.x, 0)),
+    y: roundForDebug(finiteNumber(vector.y, 0)),
+    z: roundForDebug(finiteNumber(vector.z, 0))
+  };
+}
+
+function eulerDebug(euler: THREE.Euler) {
+  return vectorDebug(euler);
+}
+
+function eulerDegreesDebug(euler: THREE.Euler) {
+  return {
+    x: roundForDebug(THREE.MathUtils.radToDeg(finiteNumber(euler.x, 0))),
+    y: roundForDebug(THREE.MathUtils.radToDeg(finiteNumber(euler.y, 0))),
+    z: roundForDebug(THREE.MathUtils.radToDeg(finiteNumber(euler.z, 0)))
+  };
 }

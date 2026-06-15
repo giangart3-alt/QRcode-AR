@@ -8,9 +8,8 @@ import { APP_AXIS_COLORS } from "@/lib/coordinates";
 import type { MarkerSettings } from "@/lib/placement";
 import { boardImageUrlForStyle, getMarkerBoardImageUrl, mmToMeters } from "@/lib/placement";
 import {
-  applySceneTransform,
-  computeBaseFitScaleFromObject,
-  computeSceneDisplayScale,
+  applyRuntimeSceneTransform,
+  computeSceneTransformForRuntime,
   sceneTransformFromObject,
   type SceneScaleMetrics
 } from "@/lib/scene-transform";
@@ -45,21 +44,23 @@ export function SceneThreeViewport({
   const transformRef = useRef<TransformControls | null>(null);
   const sceneRef = useRef<SceneMetadata | null>(scene);
   const baseFitScaleRef = useRef(1);
-  const modelDimensionsRef = useRef({ modelWidthM: 0, modelDepthM: 0 });
+  const modelDimensionsRef = useRef({ modelWidthM: 0, modelDepthM: 0, modelHeightM: 0 });
 
   const applyCurrentScene = useCallback(() => {
     const model = modelRef.current;
     const currentScene = sceneRef.current;
     if (!model || !currentScene) return;
 
-    const displayedScale = computeSceneDisplayScale(currentScene, baseFitScaleRef.current);
-    applySceneTransform(model, currentScene, displayedScale);
-    onMetricsChange?.({
-      ...modelDimensionsRef.current,
-      baseFitScale: baseFitScaleRef.current,
-      displayedScale
-    });
-  }, [onMetricsChange]);
+    const runtimeTransform = computeSceneTransformForRuntime(model, currentScene, marker, "desktop");
+    applyRuntimeSceneTransform(model, runtimeTransform);
+    baseFitScaleRef.current = runtimeTransform.metrics.baseFitScale;
+    modelDimensionsRef.current = {
+      modelWidthM: runtimeTransform.metrics.modelWidthM,
+      modelDepthM: runtimeTransform.metrics.modelDepthM,
+      modelHeightM: runtimeTransform.metrics.modelHeightM
+    };
+    onMetricsChange?.(runtimeTransform.metrics);
+  }, [marker, onMetricsChange]);
 
   useEffect(() => {
     sceneRef.current = scene;
@@ -246,21 +247,20 @@ export function SceneThreeViewport({
 
         threeScene.add(model);
         modelRef.current = model;
-        const fit = computeBaseFitScaleFromObject(model, {
-          widthMm: marker.widthMm,
-          heightMm: marker.heightMm
-        });
-        baseFitScaleRef.current = fit.baseFitScale;
+        const runtimeTransform = computeSceneTransformForRuntime(
+          model,
+          sceneRef.current || activeScene,
+          marker,
+          "desktop"
+        );
+        applyRuntimeSceneTransform(model, runtimeTransform);
+        baseFitScaleRef.current = runtimeTransform.metrics.baseFitScale;
         modelDimensionsRef.current = {
-          modelWidthM: fit.modelWidthM,
-          modelDepthM: fit.modelDepthM
+          modelWidthM: runtimeTransform.metrics.modelWidthM,
+          modelDepthM: runtimeTransform.metrics.modelDepthM,
+          modelHeightM: runtimeTransform.metrics.modelHeightM
         };
-        const displayedScale = computeSceneDisplayScale(sceneRef.current || activeScene, fit.baseFitScale);
-        applySceneTransform(model, sceneRef.current || activeScene, displayedScale);
-        onMetricsChange?.({
-          ...fit,
-          displayedScale
-        });
+        onMetricsChange?.(runtimeTransform.metrics);
         transform?.attach(model);
         onStatusChange?.("Scene loaded.");
       } catch (caught) {
