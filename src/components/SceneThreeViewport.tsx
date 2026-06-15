@@ -182,10 +182,6 @@ export function SceneThreeViewport({
     border.rotation.x = -Math.PI / 2;
     threeScene.add(border);
 
-    const grid = new THREE.GridHelper(maxMarkerMeters, 10, 0x8b98aa, 0xd5dbe5);
-    grid.position.y = 0.002;
-    threeScene.add(grid);
-
     const axes = createAppAxesHelper(Math.min(maxMarkerMeters * 0.28, 0.3));
     axes.position.set(0, 0.01, 0);
     threeScene.add(axes);

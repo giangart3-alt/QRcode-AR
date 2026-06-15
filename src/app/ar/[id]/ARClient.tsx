@@ -473,6 +473,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       const arToolkitContext = new window.THREEx.ArToolkitContext({
         cameraParametersUrl: CAMERA_PARAMETERS,
         detectionMode: "mono",
+        patternRatio: 0.5,
+        labelingMode: "black_region",
         maxDetectionRate: 60,
         canvasWidth: 640,
         canvasHeight: 480,

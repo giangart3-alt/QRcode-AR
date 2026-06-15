@@ -51,6 +51,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
   const [status, setStatus] = useState("Loading project...");
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [error, setError] = useState("");
+  const [desktopDebugStatus, setDesktopDebugStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [uploadStage, setUploadStage] = useState<UploadStage>("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -124,6 +125,61 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     );
     markDirty("Scene has unsaved changes.");
   }, [markDirty]);
+
+  const copyDesktopDebug = useCallback(async () => {
+    const report = {
+      generatedAt: new Date().toISOString(),
+      pageUrl: window.location.href,
+      userAgent: navigator.userAgent,
+      viewport: viewportDebug(),
+      saveState,
+      status,
+      project: project
+        ? {
+            id: project.id,
+            name: project.name,
+            arUrl: project.arUrl,
+            activeSceneId: project.activeSceneId
+          }
+        : null,
+      selectedScene: selectedScene
+        ? {
+            id: selectedScene.id,
+            name: selectedScene.name,
+            modelUrl: selectedScene.modelUrl,
+            modelPathname: selectedScene.modelPathname,
+            placement: selectedScene.placement,
+            normalizedScale: selectedScene.normalizedScale,
+            scaleMode: selectedScene.scaleMode,
+            architecturalScale: selectedScene.architecturalScale
+          }
+        : null,
+      marker: project
+        ? {
+            widthMm: project.marker.widthMm,
+            heightMm: project.marker.heightMm,
+            imageUrl: project.marker.imageUrl,
+            boardImageUrl: project.marker.boardImageUrl,
+            patternUrl: project.marker.patternUrl,
+            trackingMarkerId: project.marker.trackingMarkerId,
+            trackingMarkerImageUrl: project.marker.trackingMarkerImageUrl,
+            trackingMarkerPatternUrl: project.marker.trackingMarkerPatternUrl,
+            trackingMarkerSizeOnBoardMm: project.marker.trackingMarkerSizeOnBoardMm,
+            geometry: getMarkerBoardGeometry(project.marker)
+          }
+        : null,
+      metrics
+    };
+
+    try {
+      await writeClipboard(JSON.stringify(report, null, 2));
+      setDesktopDebugStatus("Desktop debug copied");
+    } catch {
+      setDesktopDebugStatus("Copy failed");
+    }
+
+    window.setTimeout(() => setDesktopDebugStatus(""), 2200);
+  }, [metrics, project, saveState, selectedScene, status]);
 
   async function saveProject(nextProject = project, nextStatus = "Project saved.") {
     if (!nextProject) return null;
@@ -661,6 +717,13 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
                 Model {formatNumber(metrics.modelWidthM)}m x {formatNumber(metrics.modelDepthM)}m - scale {formatNumber(metrics.displayedScale)}
               </p>
             ) : null}
+            <button
+              type="button"
+              className="pointer-events-auto rounded-md border border-[var(--line)] bg-white/90 px-3 py-1.5 text-xs font-semibold text-[var(--ink)] shadow-sm backdrop-blur hover:bg-white"
+              onClick={copyDesktopDebug}
+            >
+              {desktopDebugStatus || "Copy desktop debug"}
+            </button>
           </div>
           {error && !selectedScene ? (
             <p className="border-b border-[var(--line)] bg-[var(--soft)] px-4 py-3 text-sm font-semibold text-[var(--ink)]">
@@ -1150,6 +1213,38 @@ function parsePositiveDecimal(value: string, fallback: number) {
 
 function formatNumber(value: number) {
   return Number.isInteger(value) ? String(value) : String(roundForStorage(value));
+}
+
+function viewportDebug() {
+  return {
+    width: window.innerWidth,
+    height: window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio,
+    screenWidth: window.screen.width,
+    screenHeight: window.screen.height,
+    orientation: window.screen.orientation?.type || ""
+  };
+}
+
+async function writeClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+
+  if (!copied) {
+    throw new Error("Clipboard copy failed.");
+  }
 }
 
 function getGlbContentType(fileType: string) {

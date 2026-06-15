@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { HIRO_MARKER_IMAGE_URL, HIRO_MARKER_PATTERN_URL } from "@/lib/placement";
+import { DEFAULT_MARKER_SIZE_MM, HIRO_MARKER_IMAGE_URL, HIRO_MARKER_PATTERN_URL, mmToMeters } from "@/lib/placement";
 
 declare global {
   interface Window {
@@ -44,6 +44,7 @@ type TestStatus =
 const AR_SCRIPT = "https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.7/three.js/build/ar-threex.js";
 const CAMERA_PARAMETERS = "https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.7/data/data/camera_para.dat";
 const INSTRUCTION = "Print or display the HIRO marker large and flat. Keep the full black border visible. Avoid glare. Move the phone closer until the marker fills about 25-40% of the screen.";
+const MARKER_SIZE_M = mmToMeters(DEFAULT_MARKER_SIZE_MM);
 
 export function ARTestClient() {
   const mountRef = useRef<HTMLDivElement | null>(null);
@@ -120,7 +121,8 @@ export function ARTestClient() {
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       Object.assign(renderer.domElement.style, {
         position: "absolute",
-        inset: "0",
+        top: "0",
+        left: "0",
         zIndex: "1",
         pointerEvents: "none"
       });
@@ -134,14 +136,14 @@ export function ARTestClient() {
       markerRoot.visible = false;
       scene.add(markerRoot);
 
-      const axes = new THREE.AxesHelper(0.75);
+      const axes = new THREE.AxesHelper(MARKER_SIZE_M * 0.6);
       markerRoot.add(axes);
 
       const cube = new THREE.Mesh(
-        new THREE.BoxGeometry(0.34, 0.34, 0.34),
+        new THREE.BoxGeometry(MARKER_SIZE_M * 0.3, MARKER_SIZE_M * 0.3, MARKER_SIZE_M * 0.3),
         new THREE.MeshNormalMaterial({ transparent: true, opacity: 0.92 })
       );
-      cube.position.y = 0.18;
+      cube.position.y = MARKER_SIZE_M * 0.15;
       markerRoot.add(cube);
 
       const arToolkitSource = new window.THREEx.ArToolkitSource({
@@ -179,10 +181,8 @@ export function ARTestClient() {
       video.muted = true;
       Object.assign(video.style, {
         position: "absolute",
-        inset: "0",
-        width: "100%",
-        height: "100%",
-        objectFit: "cover",
+        top: "0",
+        left: "0",
         zIndex: "0"
       });
       mount.prepend(video);
@@ -202,7 +202,13 @@ export function ARTestClient() {
 
       const arToolkitContext = new window.THREEx.ArToolkitContext({
         cameraParametersUrl: CAMERA_PARAMETERS,
-        detectionMode: "mono"
+        detectionMode: "mono",
+        patternRatio: 0.5,
+        labelingMode: "black_region",
+        maxDetectionRate: 60,
+        canvasWidth: 640,
+        canvasHeight: 480,
+        imageSmoothingEnabled: true
       });
 
       await new Promise<void>((resolve) => {
@@ -215,8 +221,12 @@ export function ARTestClient() {
       new window.THREEx.ArMarkerControls(arToolkitContext, markerRoot, {
         type: "pattern",
         patternUrl: HIRO_MARKER_PATTERN_URL,
-        size: 1,
-        changeMatrixMode: "modelViewMatrix"
+        size: MARKER_SIZE_M,
+        changeMatrixMode: "modelViewMatrix",
+        smooth: true,
+        smoothCount: 5,
+        smoothTolerance: 0.01,
+        smoothThreshold: 2
       });
 
       setStatus("pattern loaded");
