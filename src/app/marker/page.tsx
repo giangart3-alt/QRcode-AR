@@ -25,18 +25,18 @@ export default function MarkerPage() {
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={boardImageUrl}
-            alt="Official QRcode AR printable playground board"
+            alt="Official HIRO marker"
             className="h-auto w-full rounded-lg border border-[var(--line)] print:rounded-none"
           />
         </div>
 
         <aside className="no-print rounded-xl border border-[var(--line)] bg-[var(--background)] p-5">
           <p className="text-sm font-bold uppercase tracking-[0.2em] text-[var(--muted)]">Official marker</p>
-          <h1 className="mt-3 text-4xl font-black">Calibration playground</h1>
+          <h1 className="mt-3 text-4xl font-black">HIRO marker</h1>
           <div className="mt-5 space-y-4 text-base leading-7 text-[var(--muted)]">
             <p>
-              Print or display this board. The board is the visual playground; the
-              centered square is the AR tracking marker used by the phone AR page.
+              Print or display this marker large and flat. The phone AR page tracks
+              this HIRO marker for the current baseline.
             </p>
             <p>
               Default physical size: <strong>{DEFAULT_MARKER_WIDTH_MM}mm x {DEFAULT_MARKER_HEIGHT_MM}mm</strong>.
@@ -52,6 +52,9 @@ export default function MarkerPage() {
               <strong>{marker.trackingMarkerSizeOnBoardMm}mm</strong> square.
             </p>
           </div>
+          <Link className="button-secondary mt-5" href="/ar/test">
+            Open AR test
+          </Link>
         </aside>
       </section>
     </main>

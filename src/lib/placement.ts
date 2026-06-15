@@ -1,9 +1,12 @@
 export const LEGACY_PLAYGROUND_IMAGE_URL = "/markers/playground.png";
-export const DEFAULT_TRACKING_MARKER_ID = "default-ar-tracker";
-export const TRACKING_MARKER_IMAGE_URL = "/markers/default-ar-tracker/default-ar-tracker.svg";
-export const TRACKING_MARKER_PNG_URL = "/markers/default-ar-tracker/default-ar-tracker.png";
-export const TRACKING_MARKER_PATTERN_URL = "/markers/default-ar-tracker/default-ar-tracker.patt";
-export const MARKER_IMAGE_URL = LEGACY_PLAYGROUND_IMAGE_URL;
+export const HIRO_MARKER_ID = "hiro";
+export const HIRO_MARKER_IMAGE_URL = "/markers/hiro/hiro.png";
+export const HIRO_MARKER_PATTERN_URL = "/markers/hiro/hiro.patt";
+export const DEFAULT_TRACKING_MARKER_ID = HIRO_MARKER_ID;
+export const TRACKING_MARKER_IMAGE_URL = HIRO_MARKER_IMAGE_URL;
+export const TRACKING_MARKER_PNG_URL = HIRO_MARKER_IMAGE_URL;
+export const TRACKING_MARKER_PATTERN_URL = HIRO_MARKER_PATTERN_URL;
+export const MARKER_IMAGE_URL = HIRO_MARKER_IMAGE_URL;
 export const MARKER_PATTERN_URL = TRACKING_MARKER_PATTERN_URL;
 export const DEFAULT_MARKER_WIDTH_MM = 1000;
 export const DEFAULT_MARKER_HEIGHT_MM = 700;
@@ -146,7 +149,7 @@ export function createMarkerSettings(input?: Partial<MarkerSettings>): MarkerSet
     qrPlacement: normalizeQrPlacement(input?.qrPlacement),
     screen,
     coordinateSystem: {
-      origin: "center of board/playground",
+      origin: "center of HIRO marker board",
       xAxis: "left/right on board",
       yAxis: "forward/back on board",
       zAxis: "vertical height above board",
@@ -234,7 +237,7 @@ export function normalizeMarker(marker: Partial<MarkerSettings> | null | undefin
     qrPlacement: normalizeQrPlacement(marker?.qrPlacement),
     screen,
     coordinateSystem: {
-      origin: marker?.coordinateSystem?.origin || "center of board/playground",
+      origin: marker?.coordinateSystem?.origin || "center of HIRO marker board",
       xAxis: "left/right on board",
       yAxis: "forward/back on board",
       zAxis: "vertical height above board",
@@ -273,7 +276,8 @@ export function getMarkerBoardImageUrl(marker: Pick<MarkerSettings, "boardImageU
 }
 
 export function getTrackingMarkerPatternUrl(marker: Pick<MarkerSettings, "trackingMarkerPatternUrl" | "patternUrl">) {
-  return marker.trackingMarkerPatternUrl || marker.patternUrl || TRACKING_MARKER_PATTERN_URL;
+  void marker;
+  return HIRO_MARKER_PATTERN_URL;
 }
 
 export function boardImageUrlForStyle(
@@ -283,15 +287,12 @@ export function boardImageUrlForStyle(
   trackingMarkerSizeOnBoardMm = defaultTrackingMarkerSize(widthMm, heightMm),
   trackingMarkerPositionOnBoard = { xMm: 0, yMm: 0 }
 ) {
-  return svgDataUrl(
-    buildBoardSvg({
-      boardStyle: normalizeMarkerStyleId(styleId),
-      widthMm,
-      heightMm,
-      trackingMarkerSizeOnBoardMm,
-      trackingMarkerPositionOnBoard
-    })
-  );
+  void styleId;
+  void widthMm;
+  void heightMm;
+  void trackingMarkerSizeOnBoardMm;
+  void trackingMarkerPositionOnBoard;
+  return HIRO_MARKER_IMAGE_URL;
 }
 
 export function buildBoardSvg({
@@ -327,7 +328,7 @@ export function buildBoardSvg({
     ${trackingMarkerGeometry()}
   </g>
   <text x="${roundSvg(width / 2)}" y="${roundSvg(labelY)}" text-anchor="middle" fill="#111827" font-family="Arial, Helvetica, sans-serif" font-size="${roundSvg(labelFontSize)}" font-weight="800">AR tracking marker</text>
-  <text x="${roundSvg(width - padding)}" y="${roundSvg(height - padding)}" text-anchor="end" fill="#4b5563" font-family="Arial, Helvetica, sans-serif" font-size="${roundSvg(Math.max(labelFontSize * 0.64, 7))}" font-weight="700">Board/playground texture</text>
+  <text x="${roundSvg(width - padding)}" y="${roundSvg(height - padding)}" text-anchor="end" fill="#4b5563" font-family="Arial, Helvetica, sans-serif" font-size="${roundSvg(Math.max(labelFontSize * 0.64, 7))}" font-weight="700">HIRO marker board</text>
 </svg>`;
 }
 
@@ -474,10 +475,6 @@ function trackingMarkerGeometry() {
   <rect x="148" y="86" width="34" height="94" fill="#000000"/>
   <rect x="72" y="144" width="96" height="34" fill="#000000"/>
   <rect x="184" y="164" width="24" height="44" fill="#000000"/>`;
-}
-
-function svgDataUrl(svg: string) {
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
 function roundSvg(value: number) {

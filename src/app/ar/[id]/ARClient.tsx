@@ -3,7 +3,13 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { getMarkerBoardImageUrl, getTrackingMarkerPatternUrl, mmToMeters } from "@/lib/placement";
+import {
+  HIRO_MARKER_ID,
+  HIRO_MARKER_IMAGE_URL,
+  HIRO_MARKER_PATTERN_URL,
+  getMarkerBoardImageUrl,
+  mmToMeters
+} from "@/lib/placement";
 import { applySceneTransform, computeBaseFitScaleFromObject, computeSceneDisplayScale } from "@/lib/scene-transform";
 import type { ProjectMetadata, SceneMetadata } from "@/lib/projects";
 import { loadGltfModel } from "@/lib/three-gltf";
@@ -50,6 +56,7 @@ export function ARClient({ id }: { id: string }) {
   const [message, setMessage] = useState("Loading project...");
   const [debug, setDebug] = useState(false);
   const [trackingResetKey, setTrackingResetKey] = useState(0);
+  const [lastError, setLastError] = useState("");
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>({
     project: "loading",
     webgl: "pending",
@@ -82,11 +89,13 @@ export function ARClient({ id }: { id: string }) {
         const errorMessage = result.error || "Model not found.";
         setStatus("project", errorMessage);
         setMessage(errorMessage);
+        setLastError(errorMessage);
         return;
       }
 
       setProject(result.project);
       setStatus("project", "loaded");
+      setLastError("");
       setMessage("Project loaded. Preparing camera...");
     }
 
@@ -94,6 +103,7 @@ export function ARClient({ id }: { id: string }) {
       const errorMessage = caught instanceof Error ? caught.message : "Unable to load project.";
       setStatus("project", errorMessage);
       setMessage(errorMessage);
+      setLastError(errorMessage);
     });
 
     return () => {
@@ -108,7 +118,7 @@ export function ARClient({ id }: { id: string }) {
     const currentProject = project;
     const activeScene = getActiveSceneForClient(currentProject);
     const marker = currentProject.marker;
-    const trackingPatternUrl = getTrackingMarkerPatternUrl(marker);
+    const trackingPatternUrl = HIRO_MARKER_PATTERN_URL;
     const trackingMarkerSizeM = mmToMeters(marker.trackingMarkerSizeOnBoardMm);
     let stopped = false;
     let animationFrame = 0;
@@ -123,13 +133,16 @@ export function ARClient({ id }: { id: string }) {
       }
 
       window.THREE = THREE;
+      setLastError("");
       setStatus("marker", "loading tracking runtime");
       setMessage("Loading marker tracking...");
 
       try {
         await loadScript(AR_SCRIPT);
-      } catch {
+      } catch (caught) {
+        const errorMessage = caught instanceof Error ? caught.message : "Unable to load the marker tracking library.";
         setStatus("marker", "tracking runtime failed");
+        setLastError(errorMessage);
         setMessage("Unable to load the marker tracking library. Use the fallback viewer.");
         return;
       }
@@ -137,6 +150,7 @@ export function ARClient({ id }: { id: string }) {
       const mount = mountRef.current;
       if (!window.THREEx || stopped || !mount) {
         setStatus("marker", "tracking runtime unavailable");
+        setLastError("AR.js runtime is unavailable.");
         setMessage("Unsupported browser. Use the fallback viewer.");
         return;
       }
@@ -145,8 +159,10 @@ export function ARClient({ id }: { id: string }) {
       try {
         renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
         renderer.getContext();
-      } catch {
+      } catch (caught) {
+        const errorMessage = caught instanceof Error ? caught.message : "WebGL is unavailable in this browser.";
         setStatus("webgl", "unavailable");
+        setLastError(errorMessage);
         setMessage("WebGL is unavailable in this browser.");
         return;
       }
@@ -227,8 +243,10 @@ export function ARClient({ id }: { id: string }) {
         mount.prepend(video);
         setStatus("camera", "active");
         setMessage("Camera active. Initializing marker tracking...");
-      } catch {
-        setStatus("camera", "permission denied");
+      } catch (caught) {
+        const errorMessage = caught instanceof Error ? caught.message : "Camera permission denied.";
+        setStatus("camera", "camera error");
+        setLastError(errorMessage);
         setMessage("Camera permission denied. Allow camera access, then reload this page.");
         renderer.dispose();
         renderer.domElement.remove();
@@ -254,7 +272,7 @@ export function ARClient({ id }: { id: string }) {
         size: trackingMarkerSizeM,
         changeMatrixMode: "modelViewMatrix"
       });
-      setStatus("marker", `tracking marker loaded (${marker.trackingMarkerId})`);
+      setStatus("marker", "pattern loaded");
 
       resizeHandler = () => {
         arToolkitSource.onResizeElement();
@@ -308,6 +326,7 @@ export function ARClient({ id }: { id: string }) {
       } catch (caught) {
         const errorMessage = caught instanceof Error ? caught.message : "Model loading error.";
         setStatus("model", errorMessage);
+        setLastError(errorMessage);
         setMessage(errorMessage);
         return;
       }
@@ -342,11 +361,11 @@ export function ARClient({ id }: { id: string }) {
           } else if (Date.now() - lastSeen < LAST_POSE_HOLD_MS) {
             markerRoot.visible = true;
             setModelOpacity(markerRoot, 0.68);
-            updateTrackingState("marker lost - using last known pose");
+            updateTrackingState("marker lost");
           } else {
             markerRoot.visible = true;
             setModelOpacity(markerRoot, 0.28);
-            updateTrackingState("marker lost - model ghosted");
+            updateTrackingState("marker lost");
           }
         }
 
@@ -372,6 +391,7 @@ export function ARClient({ id }: { id: string }) {
       const errorMessage = caught instanceof Error ? caught.message : "AR runtime error.";
       setMessage(errorMessage);
       setStatus("tracking", errorMessage);
+      setLastError(errorMessage);
     });
 
     return () => {
@@ -380,6 +400,8 @@ export function ARClient({ id }: { id: string }) {
       cleanupRef.current = null;
     };
   }, [project, trackingResetKey, setStatus]);
+
+  const activeSceneForDebug = project ? getActiveSceneForClient(project) : null;
 
   return (
     <main className="fixed inset-0 overflow-hidden bg-black text-white">
@@ -396,6 +418,12 @@ export function ARClient({ id }: { id: string }) {
                 href={project.viewUrl}
               >
                 Open viewer
+              </Link>
+              <Link
+                className="focus-ring rounded-lg bg-white/15 px-3 py-2 text-sm font-semibold backdrop-blur hover:bg-white/25"
+                href="/ar/test"
+              >
+                Open AR test
               </Link>
             </>
           ) : null}
@@ -423,26 +451,29 @@ export function ARClient({ id }: { id: string }) {
             {JSON.stringify(
               {
                 status: runtimeStatus,
-                project: project?.id,
-                activeScene: project ? getActiveSceneForClient(project)?.id : "",
-                modelUrl: project ? getActiveSceneForClient(project)?.modelUrl : "",
-                modelPath: project ? getActiveSceneForClient(project)?.modelPathname : "",
+                cameraActive: runtimeStatus.camera === "active",
+                arjsInitialized: ["pattern loaded", "marker searching", "marker found", "marker lost"].includes(runtimeStatus.marker),
+                markerPatternUrl: HIRO_MARKER_PATTERN_URL,
+                markerFound: runtimeStatus.tracking === "marker found",
+                activeProjectId: project?.id,
+                activeSceneId: activeSceneForDebug?.id || "",
+                modelLoaded: runtimeStatus.model === "loaded",
+                modelUrl: activeSceneForDebug?.modelUrl || "",
+                modelPath: activeSceneForDebug?.modelPathname || "",
+                lastError,
                 markerStyle: project?.marker.styleId,
                 boardStyle: project?.marker.boardStyle,
                 boardSizeMm: project ? `${project.marker.widthMm} x ${project.marker.heightMm}` : "",
                 boardImage: project ? getMarkerBoardImageUrl(project.marker) : "",
-                trackingMarkerId: project?.marker.trackingMarkerId,
+                trackingMarkerId: HIRO_MARKER_ID,
                 trackingMarkerType: project?.marker.trackingMarkerType,
                 trackingMarkerSizeMm: project?.marker.trackingMarkerSizeOnBoardMm,
-                trackingMarkerImage: project?.marker.trackingMarkerImageUrl,
-                trackingMarkerPattern: project ? getTrackingMarkerPatternUrl(project.marker) : "",
+                trackingMarkerImage: HIRO_MARKER_IMAGE_URL,
+                trackingMarkerPattern: HIRO_MARKER_PATTERN_URL,
                 trackingMarkerPositionOnBoard: project?.marker.trackingMarkerPositionOnBoard,
-                patternUrlLoaded: Boolean(project?.marker.trackingMarkerPatternUrl || project?.marker.patternUrl),
-                cameraActive: runtimeStatus.camera === "active",
-                activeSceneLoaded: Boolean(project ? getActiveSceneForClient(project) : null),
-                modelLoaded: runtimeStatus.model === "loaded",
+                activeSceneLoaded: Boolean(activeSceneForDebug),
                 webgl: runtimeStatus.webgl,
-                placement: project ? getActiveSceneForClient(project)?.placement : null,
+                placement: activeSceneForDebug?.placement || null,
                 userAgent: navigator.userAgent
               },
               null,
@@ -467,14 +498,23 @@ function loadScript(src: string) {
   return new Promise<void>((resolve, reject) => {
     const existing = document.querySelector<HTMLScriptElement>(`script[src="${src}"]`);
     if (existing) {
-      resolve();
+      if (existing.dataset.loaded === "true") {
+        resolve();
+        return;
+      }
+
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener("error", () => reject(new Error(`Unable to load ${src}`)), { once: true });
       return;
     }
 
     const script = document.createElement("script");
     script.src = src;
     script.async = true;
-    script.onload = () => resolve();
+    script.onload = () => {
+      script.dataset.loaded = "true";
+      resolve();
+    };
     script.onerror = () => reject(new Error(`Unable to load ${src}`));
     document.head.appendChild(script);
   });

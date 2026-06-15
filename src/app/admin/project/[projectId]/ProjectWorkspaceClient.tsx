@@ -8,10 +8,10 @@ import { CopyButton } from "@/components/CopyButton";
 import { SceneThreeViewport, type TransformMode } from "@/components/SceneThreeViewport";
 import { APP_AXIS_COLORS, type AppAxis } from "@/lib/coordinates";
 import {
+  HIRO_MARKER_IMAGE_URL,
   MARKER_STYLES,
   createDefaultPlacement,
   createMarkerSettings,
-  getMarkerBoardImageUrl,
   screenPhysicalSizeFromPixels,
   type MarkerSettings,
   type MarkerOutputMode,
@@ -657,6 +657,9 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
             <button type="button" className="button-compact" onClick={openMarkerModal}>
               Marker
             </button>
+            <Link className="button-compact" href="/ar/test">
+              Open AR test
+            </Link>
             <button type="button" className="button-compact" onClick={toggleQr}>
               QR
             </button>
@@ -676,6 +679,9 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
                   <a className="button-compact" href={project.arUrl}>
                     Open AR
                   </a>
+                  <Link className="button-compact" href="/ar/test">
+                    Open AR test
+                  </Link>
                   <a className="button-compact col-span-2" href={project.viewUrl}>
                     Open viewer
                   </a>
@@ -960,7 +966,6 @@ function MarkerModal({
   onSetScreenSize: (widthPx: number, heightPx: number, label: string) => void;
 }) {
   const marker = project.marker;
-  const boardImageUrl = getMarkerBoardImageUrl(marker);
   const markerSaveLabel = {
     saved: "Saved",
     dirty: "Unsaved",
@@ -968,7 +973,7 @@ function MarkerModal({
     error: "Save error"
   }[saveState];
   const svgHref = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-    buildMarkerSvg(project.name, marker, project.arUrl, qrDataUrl)
+    buildMarkerSvg(project.name, marker)
   )}`;
 
   async function downloadPng() {
@@ -978,24 +983,21 @@ function MarkerModal({
     const context = canvas.getContext("2d");
     if (!context) return;
 
-    context.fillStyle = "#fff7ed";
+    context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
+    context.strokeStyle = "#111827";
+    context.lineWidth = Math.max(2, Math.round(canvas.width * 0.002));
+    context.strokeRect(context.lineWidth / 2, context.lineWidth / 2, canvas.width - context.lineWidth, canvas.height - context.lineWidth);
 
-    const markerImage = await loadImage(boardImageUrl);
-    const qrImage = qrDataUrl ? await loadImage(qrDataUrl) : null;
-    const padding = canvas.width * 0.04;
-    const qrSize = canvas.width * 0.16;
-
-    context.drawImage(markerImage, padding, padding, canvas.width - padding * 2 - qrSize - padding, canvas.height - padding * 2);
-    if (qrImage) {
-      const qrX = canvas.width - padding - qrSize;
-      context.fillStyle = "#fff";
-      context.fillRect(qrX - 8, padding - 8, qrSize + 16, qrSize + 16);
-      context.drawImage(qrImage, qrX, padding, qrSize, qrSize);
-      context.fillStyle = "#1c1917";
-      context.font = `${Math.max(12, Math.round(canvas.width * 0.012))}px Arial`;
-      context.fillText("AR tracking marker: default-ar-tracker", qrX, padding + qrSize + 32);
-    }
+    const markerImage = await loadImage(HIRO_MARKER_IMAGE_URL);
+    const layout = getHiroBoardLayout(canvas.width, canvas.height);
+    context.fillStyle = "#1c1917";
+    context.textAlign = "center";
+    context.font = `800 ${layout.titleFontSize}px Arial`;
+    context.fillText(project.name, canvas.width / 2, layout.titleY);
+    context.drawImage(markerImage, layout.markerX, layout.markerY, layout.markerSize, layout.markerSize);
+    context.font = `700 ${layout.noteFontSize}px Arial`;
+    context.fillText("Track the large black marker. Keep the whole black border visible.", canvas.width / 2, layout.noteY);
 
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) return;
@@ -1021,8 +1023,12 @@ function MarkerModal({
         <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div className="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
             <div className="grid gap-3 rounded-md bg-white p-3 md:grid-cols-[minmax(0,1fr)_180px]">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={boardImageUrl} alt={`${project.name} printable board`} className="w-full rounded-md border border-[var(--line)]" />
+              <div className="grid min-h-96 content-center gap-5 rounded-md border border-[var(--line)] bg-white p-5 text-center">
+                <p className="text-base font-black text-[var(--ink)]">{project.name}</p>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={HIRO_MARKER_IMAGE_URL} alt={`${project.name} HIRO marker`} className="mx-auto aspect-square w-[min(78%,24rem)]" />
+                <p className="text-xs font-bold text-[var(--ink)]">Track the large black marker. Keep the whole black border visible.</p>
+              </div>
               <div className="grid content-start gap-3">
                 {qrDataUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -1047,7 +1053,7 @@ function MarkerModal({
                   </p>
                 </div>
                 <p className="text-xs leading-5 text-[var(--muted)]">
-                  The board is the printable playground. The tracking marker is the AR target.
+                  The large HIRO marker is the AR target.
                 </p>
                 {marker.outputMode === "screen" && marker.screen ? (
                   <p className="text-xs text-[var(--muted)]">
@@ -1166,11 +1172,11 @@ function MarkerModal({
               <button type="button" className="button-compact" onClick={downloadPng}>
                 Download PNG
               </button>
-              <a className="button-compact" href={marker.trackingMarkerImageUrl} download={`${safeFileName(project.name)}-tracking-marker.svg`}>
-                Tracking SVG
-              </a>
-              <a className="button-compact" href={marker.trackingMarkerPngUrl} download={`${safeFileName(project.name)}-tracking-marker.png`}>
-                Tracking PNG
+              <Link className="button-compact" href="/ar/test">
+                Open AR test
+              </Link>
+              <a className="button-compact" href={HIRO_MARKER_IMAGE_URL} download={`${safeFileName(project.name)}-hiro-marker.png`}>
+                HIRO marker PNG
               </a>
               <button type="button" className="button-compact-primary" onClick={() => window.print()}>
                 Print
@@ -1445,7 +1451,7 @@ function SceneInspector({
           Center
         </button>
         <button type="button" className="button-compact" onClick={onFit}>
-          Fit playground
+          Fit marker
         </button>
         <button
           type="button"
@@ -1582,27 +1588,38 @@ function NumberField({
   );
 }
 
-function buildMarkerSvg(projectName: string, marker: MarkerSettings, arUrl: string, qrDataUrl: string) {
+function buildMarkerSvg(projectName: string, marker: MarkerSettings) {
   const width = marker.widthMm;
   const height = marker.heightMm;
-  const padding = Math.max(width * 0.035, 16);
-  const qrSize = Math.min(width * 0.18, height * 0.28);
-  const markerWidth = width - padding * 3 - qrSize;
-  const markerHeight = height - padding * 2;
-  const qrX = padding * 2 + markerWidth;
-  const boardImageUrl = getMarkerBoardImageUrl(marker);
+  const layout = getHiroBoardLayout(width, height);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
-  <rect width="100%" height="100%" fill="#fff7ed"/>
-  <image href="${escapeXml(boardImageUrl)}" x="${padding}" y="${padding}" width="${markerWidth}" height="${markerHeight}" preserveAspectRatio="xMidYMid meet"/>
-  <rect x="${qrX - 4}" y="${padding - 4}" width="${qrSize + 8}" height="${qrSize + 8}" fill="#fff" stroke="#fed7aa"/>
-  ${qrDataUrl ? `<image href="${qrDataUrl}" x="${qrX}" y="${padding}" width="${qrSize}" height="${qrSize}"/>` : ""}
-  <text x="${qrX}" y="${padding + qrSize + 28}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">Print at 100% scale</text>
-  <text x="${qrX}" y="${padding + qrSize + 54}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="11">${escapeXml(projectName)}</text>
-  <text x="${qrX}" y="${padding + qrSize + 74}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="8">AR tracking marker: ${escapeXml(marker.trackingMarkerId)}</text>
-  <text x="${qrX}" y="${padding + qrSize + 90}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="8">Board: ${marker.widthMm}mm x ${marker.heightMm}mm - Tracker: ${marker.trackingMarkerSizeOnBoardMm}mm</text>
-  <text x="${qrX}" y="${padding + qrSize + 108}" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="8">${escapeXml(arUrl)}</text>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#111827" stroke-width="${Math.max(1, Math.min(width, height) * 0.002)}"/>
+  <text x="${width / 2}" y="${layout.titleY}" text-anchor="middle" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${layout.titleFontSize}" font-weight="800">${escapeXml(projectName)}</text>
+  <image href="${escapeXml(HIRO_MARKER_IMAGE_URL)}" x="${layout.markerX}" y="${layout.markerY}" width="${layout.markerSize}" height="${layout.markerSize}" preserveAspectRatio="xMidYMid meet"/>
+  <text x="${width / 2}" y="${layout.noteY}" text-anchor="middle" fill="#1c1917" font-family="Arial, Helvetica, sans-serif" font-size="${layout.noteFontSize}" font-weight="700">Track the large black marker. Keep the whole black border visible.</text>
 </svg>`;
+}
+
+function getHiroBoardLayout(width: number, height: number) {
+  const shortSide = Math.min(width, height);
+  const margin = Math.max(shortSide * 0.06, 16);
+  const titleFontSize = Math.max(shortSide * 0.04, 12);
+  const noteFontSize = Math.max(shortSide * 0.022, 7);
+  const topReserve = margin + titleFontSize * 1.3;
+  const bottomReserve = margin + noteFontSize * 2.5;
+  const markerSize = Math.min(shortSide * 0.68, width - margin * 2, height - topReserve - bottomReserve);
+
+  return {
+    titleFontSize,
+    noteFontSize,
+    titleY: margin + titleFontSize,
+    noteY: height - margin,
+    markerSize,
+    markerX: (width - markerSize) / 2,
+    markerY: topReserve + Math.max((height - topReserve - bottomReserve - markerSize) / 2, 0)
+  };
 }
 
 function loadImage(src: string) {
