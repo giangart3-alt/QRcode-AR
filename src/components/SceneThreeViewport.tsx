@@ -116,7 +116,7 @@ export function SceneThreeViewport({
 
     const boardImageUrl = getMarkerBoardImageUrl(marker);
     const fallbackBoardImageUrl = markerBoardImageDataUrlForStyle(
-      "technical-grid",
+      "hiro",
       marker.widthMm,
       marker.heightMm,
       marker.trackingMarkerSizeOnBoardMm,
@@ -209,6 +209,13 @@ export function SceneThreeViewport({
         const model = modelRef.current;
         const currentScene = sceneRef.current;
         if (!model || !currentScene) return;
+
+        const uniformScale =
+          (Math.abs(model.scale.x) + Math.abs(model.scale.y) + Math.abs(model.scale.z)) / 3;
+        if (Number.isFinite(uniformScale) && uniformScale > 0) {
+          model.scale.setScalar(uniformScale);
+        }
+
         onSceneChange?.(sceneTransformFromObject(currentScene, model, baseFitScaleRef.current));
       });
 

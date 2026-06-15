@@ -51,9 +51,6 @@ export default function MarkerPage() {
               <strong>{marker.trackingMarkerSizeOnBoardMm}mm</strong> square.
             </p>
           </div>
-          <Link className="button-secondary mt-5" href="/ar/test">
-            Open AR test
-          </Link>
         </aside>
       </section>
     </main>

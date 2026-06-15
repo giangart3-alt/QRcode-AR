@@ -263,9 +263,6 @@ export function DashboardClient() {
             QRcode AR
           </Link>
           <div className="flex flex-wrap gap-2">
-            <Link className="button-secondary" href="/ar/test">
-              Open AR test
-            </Link>
             <button
               type="button"
               className="focus-ring rounded-lg bg-[var(--ink)] px-4 py-3 text-sm font-semibold text-white hover:bg-black disabled:opacity-60"

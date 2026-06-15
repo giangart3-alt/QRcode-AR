@@ -4,7 +4,6 @@ import { upload } from "@vercel/blob/client";
 import Link from "next/link";
 import QRCode from "qrcode";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { CopyButton } from "@/components/CopyButton";
 import { SceneThreeViewport, type TransformMode } from "@/components/SceneThreeViewport";
 import { APP_AXIS_COLORS, type AppAxis } from "@/lib/coordinates";
 import {
@@ -66,6 +65,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     );
   }, [project, selectedSceneId]);
   const working = busy || uploadStage !== "idle";
+  const canOpenQr = saveState === "saved" && !working;
 
   useEffect(() => {
     let cancelled = false;
@@ -103,10 +103,12 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
-  function markDirty(nextStatus = "Unsaved changes.") {
+  const markDirty = useCallback((nextStatus = "Unsaved changes.") => {
+    setQrOpen(false);
+    setQrDataUrl("");
     setSaveState("dirty");
     setStatus(nextStatus);
-  }
+  }, []);
 
   const handleViewportStatus = useCallback((nextStatus: string) => {
     setStatus(nextStatus);
@@ -120,9 +122,8 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
     setProject((current) =>
       current ? updateSceneInProject(current, nextScene.id, () => nextScene) : current
     );
-    setSaveState("dirty");
-    setStatus("Scene has unsaved changes.");
-  }, []);
+    markDirty("Scene has unsaved changes.");
+  }, [markDirty]);
 
   async function saveProject(nextProject = project, nextStatus = "Project saved.") {
     if (!nextProject) return null;
@@ -156,6 +157,7 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
       window.sessionStorage.setItem("adminPassword", password);
       setProject(result.project);
       setSelectedSceneId((current) => current || result.project?.activeSceneId || "");
+      setQrDataUrl("");
       setSaveState("saved");
       setStatus(nextStatus);
       return result.project;
@@ -309,13 +311,17 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
       return;
     }
 
+    if (!canOpenQr) {
+      setStatus("Save the project before opening the QR code.");
+      return;
+    }
+
     setQrOpen(true);
     await ensureQrDataUrl();
   }
 
   async function openMarkerModal() {
     setMarkerOpen(true);
-    await ensureQrDataUrl();
   }
 
   async function ensureQrDataUrl() {
@@ -481,16 +487,17 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
         {project ? (
           <div className="relative flex shrink-0 flex-wrap items-center justify-end gap-2">
-            <button type="button" className="button-compact lg:hidden" onClick={() => setScenesOpen(true)}>
-              Scenes
+            <button type="button" className="button-compact" onClick={openMarkerModal}>
+              Marker
             </button>
             <button
               type="button"
-              className="button-compact lg:hidden"
-              disabled={!selectedScene}
-              onClick={() => setInspectorOpen(true)}
+              className="button-compact"
+              disabled={!canOpenQr}
+              title={canOpenQr ? "Show QR code" : "Save the project before opening the QR code"}
+              onClick={toggleQr}
             >
-              Inspector
+              QR
             </button>
             <button
               type="button"
@@ -500,17 +507,6 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
             >
               Save project
             </button>
-            <button type="button" className="button-compact" onClick={openMarkerModal}>
-              Marker
-            </button>
-            <Link className="button-compact" href="/ar/test">
-              Open AR test
-            </Link>
-            <button type="button" className="button-compact" onClick={toggleQr}>
-              QR
-            </button>
-            <CopyButton value={project.arUrl} label="Copy AR link" compact />
-            <CopyButton value={project.viewUrl} label="Copy Viewer link" compact />
             {qrOpen ? (
               <div className="absolute right-0 top-14 z-20 w-72 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-4 shadow-xl">
                 {qrDataUrl ? (
@@ -519,19 +515,9 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
                 ) : (
                   <p className="text-sm font-semibold text-[var(--muted)]">Generating QR...</p>
                 )}
-                <p className="mt-3 break-all text-xs font-semibold text-[var(--muted)]">{project.arUrl}</p>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <CopyButton value={project.arUrl} label="Copy AR link" compact />
-                  <a className="button-compact" href={project.arUrl}>
-                    Open AR
-                  </a>
-                  <Link className="button-compact" href="/ar/test">
-                    Open AR test
-                  </Link>
-                  <a className="button-compact col-span-2" href={project.viewUrl}>
-                    Open viewer
-                  </a>
-                </div>
+                <p className="mt-3 text-center text-xs font-semibold text-[var(--muted)]">
+                  Scan this after saving. It opens the latest saved project on mobile.
+                </p>
               </div>
             ) : null}
           </div>
@@ -744,11 +730,9 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
       {project && markerOpen ? (
         <MarkerModal
           project={project}
-          qrDataUrl={qrDataUrl}
           saveState={saveState}
           busy={working}
           onApply={() => saveMarkerSettings(true)}
-          onSave={() => saveMarkerSettings(false)}
         />
       ) : null}
     </main>
@@ -757,18 +741,14 @@ export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
 
 function MarkerModal({
   project,
-  qrDataUrl,
   saveState,
   busy,
-  onApply,
-  onSave
+  onApply
 }: {
   project: ProjectMetadata;
-  qrDataUrl: string;
   saveState: SaveState;
   busy: boolean;
   onApply: () => void;
-  onSave: () => void;
 }) {
   const marker = project.marker;
   const markerSaveLabel = {
@@ -780,27 +760,6 @@ function MarkerModal({
   const svgHref = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
     buildMarkerSvg(project.name, marker)
   )}`;
-
-  async function downloadPng() {
-    const canvas = document.createElement("canvas");
-    canvas.width = 1600;
-    canvas.height = Math.round(1600 * (marker.heightMm / marker.widthMm));
-    const context = canvas.getContext("2d");
-    if (!context) return;
-
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, canvas.width, canvas.height);
-
-    const markerImage = await loadImage(HIRO_MARKER_IMAGE_URL);
-    context.drawImage(markerImage, 0, 0, canvas.width, canvas.height);
-
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-    if (!blob) return;
-
-    const href = URL.createObjectURL(blob);
-    triggerDownload(href, `${safeFileName(project.name)}-marker.png`);
-    window.setTimeout(() => URL.revokeObjectURL(href), 1000);
-  }
 
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-black/45 p-3">
@@ -816,74 +775,18 @@ function MarkerModal({
         </div>
 
         <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3">
-            <div className="grid gap-3 rounded-md bg-white p-3 md:grid-cols-[minmax(0,1fr)_180px]">
-              <div className="grid min-h-96 content-center gap-5 rounded-md border border-[var(--line)] bg-white p-5 text-center">
-                <p className="text-base font-black text-[var(--ink)]">{project.name}</p>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={svgHref} alt={`${project.name} marker board`} className="mx-auto max-h-96 max-w-full" />
-                <p className="text-xs font-bold text-[var(--ink)]">Track the large black marker. Keep the whole black border visible.</p>
-              </div>
-              <div className="grid content-start gap-3">
-                {qrDataUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={qrDataUrl} alt="AR QR code" className="w-full rounded-md border border-[var(--line)] bg-white p-2" />
-                ) : (
-                  <div className="grid aspect-square place-items-center rounded-md border border-[var(--line)] text-sm font-semibold text-[var(--muted)]">
-                    QR loading
-                  </div>
-                )}
-                <p className="break-all text-xs font-semibold text-[var(--muted)]">{project.arUrl}</p>
-                <p className="text-xs font-semibold text-[var(--ink)]">
-                  Board {marker.widthMm} x {marker.heightMm} mm
-                </p>
-                <div className="rounded-md border border-[var(--line)] bg-white p-2">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={marker.trackingMarkerImageUrl} alt="AR tracking marker preview" className="mx-auto aspect-square w-20" />
-                  <p className="mt-2 text-center text-xs font-semibold text-[var(--ink)]">
-                    {marker.trackingMarkerId}
-                  </p>
-                  <p className="text-center text-[10px] font-semibold text-[var(--muted)]">
-                    {marker.trackingMarkerSizeOnBoardMm}mm AR target
-                  </p>
-                </div>
-                <p className="text-xs leading-5 text-[var(--muted)]">
-                  The large HIRO marker is the AR target.
-                </p>
-                {marker.outputMode === "screen" && marker.screen ? (
-                  <p className="text-xs text-[var(--muted)]">
-                    {marker.screen.widthPx} x {marker.screen.heightPx} px
-                  </p>
-                ) : null}
-              </div>
-            </div>
+          <div className="grid min-h-[26rem] place-items-center rounded-lg border border-[var(--line)] bg-white p-6">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={HIRO_MARKER_IMAGE_URL} alt="HIRO marker" className="aspect-square w-full max-w-md object-contain" />
           </div>
 
           <aside className="space-y-4">
             <div className="rounded-lg border border-[var(--line)] bg-[var(--soft)] p-3 text-sm font-semibold text-[var(--ink)]">
               Fixed baseline: one 200mm x 200mm HIRO marker. This is the same marker shown in the 3D playground and tracked on mobile.
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <CopyButton value={project.arUrl} label="Copy AR link" compact />
-              <button type="button" className="button-compact-primary" disabled={busy} onClick={onSave}>
-                Save marker settings
-              </button>
-              <a className="button-compact" href={svgHref} download={`${safeFileName(project.name)}-marker.svg`}>
-                Download SVG
-              </a>
-              <button type="button" className="button-compact" onClick={downloadPng}>
-                Download PNG
-              </button>
-              <Link className="button-compact" href="/ar/test">
-                Open AR test
-              </Link>
-              <a className="button-compact" href={HIRO_MARKER_IMAGE_URL} download={`${safeFileName(project.name)}-hiro-marker.png`}>
-                HIRO marker PNG
-              </a>
-              <button type="button" className="button-compact-primary" onClick={() => window.print()}>
-                Print
-              </button>
-            </div>
+            <a className="button-compact-primary w-full justify-center" href={svgHref} download={`${safeFileName(project.name)}-marker.svg`}>
+              Download Marker
+            </a>
           </aside>
         </div>
       </section>
@@ -1217,23 +1120,6 @@ function buildMarkerSvg(projectName: string, marker: MarkerSettings) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
   <image href="${escapeXml(HIRO_MARKER_IMAGE_URL)}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid meet"/>
 </svg>`;
-}
-
-function loadImage(src: string) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    image.crossOrigin = "anonymous";
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Unable to load marker export image."));
-    image.src = src;
-  });
-}
-
-function triggerDownload(href: string, fileName: string) {
-  const anchor = document.createElement("a");
-  anchor.href = href;
-  anchor.download = fileName;
-  anchor.click();
 }
 
 function safeFileName(value: string) {

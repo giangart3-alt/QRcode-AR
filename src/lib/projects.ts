@@ -454,7 +454,7 @@ export function normalizeProjectMetadata(project: LegacyProjectShape): ProjectMe
   const urls = projectUrls(id);
   const marker = normalizeMarker(
     project.marker || {
-      styleId: "technical-grid",
+      styleId: "hiro",
       imageUrl: project.placement?.markerImage || project.markerImage || MARKER_IMAGE_URL,
       widthMm: project.placement?.markerWidthMm || project.markerWidthMm,
       heightMm: project.placement?.markerHeightMm || project.markerHeightMm

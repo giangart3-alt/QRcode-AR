@@ -175,7 +175,22 @@ function roundVector<T extends { x: number; y: number; z: number }>(vector: T) {
 }
 
 function computeModelBounds(model: THREE.Object3D) {
+  const savedPosition = model.position.clone();
+  const savedQuaternion = model.quaternion.clone();
+  const savedScale = model.scale.clone();
+
+  model.position.set(0, 0, 0);
+  model.quaternion.identity();
+  model.scale.set(1, 1, 1);
+  model.updateMatrixWorld(true);
+
   const box = new THREE.Box3().setFromObject(model);
+
+  model.position.copy(savedPosition);
+  model.quaternion.copy(savedQuaternion);
+  model.scale.copy(savedScale);
+  model.updateMatrixWorld(true);
+
   const valid = isFiniteBox(box) && !box.isEmpty();
   const size = valid ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(1, 1, 1);
 

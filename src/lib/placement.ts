@@ -11,15 +11,15 @@ export const MARKER_PATTERN_URL = TRACKING_MARKER_PATTERN_URL;
 export const DEFAULT_MARKER_SIZE_MM = 200;
 export const DEFAULT_MARKER_WIDTH_MM = DEFAULT_MARKER_SIZE_MM;
 export const DEFAULT_MARKER_HEIGHT_MM = DEFAULT_MARKER_SIZE_MM;
-export const DEFAULT_MARKER_STYLE_ID = "technical-grid";
+export const DEFAULT_MARKER_STYLE_ID = "hiro";
 export const DEFAULT_SCREEN_PHYSICAL_WIDTH_MM = 600;
 
-export type MarkerStyleId = "technical-grid" | "checker" | "minimal";
+export type MarkerStyleId = "hiro";
 export type MarkerOutputMode = "print" | "screen";
 export type TrackingMarkerType = "pattern";
 
 export const MARKER_STYLES: Array<{ id: MarkerStyleId; label: string }> = [
-  { id: "technical-grid", label: "HIRO marker" }
+  { id: "hiro", label: "HIRO marker" }
 ];
 
 export type PlacementMetadata = {

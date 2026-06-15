@@ -201,14 +201,39 @@ const INITIAL_STATUS: RuntimeStatus = {
 export function ARClient({ id, debug = false }: { id: string; debug?: boolean }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+  const liveDebugRef = useRef<Record<string, unknown>>({});
   const [project, setProject] = useState<ProjectMetadata | null>(null);
   const [publicStatus, setPublicStatus] = useState<PublicStatus>("camera loading");
   const [trackingResetKey, setTrackingResetKey] = useState(0);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>(INITIAL_STATUS);
+  const [debugCopyStatus, setDebugCopyStatus] = useState("");
 
   const patchRuntimeStatus = useCallback((next: Partial<RuntimeStatus>) => {
     setRuntimeStatus((current) => ({ ...current, ...next }));
   }, []);
+
+  const copyDebugReport = useCallback(async () => {
+    const report = {
+      generatedAt: new Date().toISOString(),
+      pageUrl: window.location.href,
+      userAgent: navigator.userAgent,
+      viewport: viewportDebug(),
+      publicStatus,
+      markerPatternUrl: HIRO_MARKER_PATTERN_URL,
+      activeProjectId: project?.id || id,
+      savedStatus: runtimeStatus,
+      live: liveDebugRef.current
+    };
+
+    try {
+      await writeClipboard(JSON.stringify(report, null, 2));
+      setDebugCopyStatus("Debug copied");
+    } catch {
+      setDebugCopyStatus("Copy failed");
+    }
+
+    window.setTimeout(() => setDebugCopyStatus(""), 2200);
+  }, [id, project, publicStatus, runtimeStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -289,6 +314,9 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     let markerWasSeen = false;
     let lastSeen = 0;
     let lastTrackingState = "";
+    let activeModel: THREE.Object3D | null = null;
+    const lastMarkerMatrix = new THREE.Matrix4();
+    let hasLastMarkerMatrix = false;
 
     async function start() {
       setPublicStatus("camera loading");
@@ -371,7 +399,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       renderer.toneMappingExposure = 1.2;
       Object.assign(renderer.domElement.style, {
         position: "absolute",
-        inset: "0",
+        top: "0",
+        left: "0",
         zIndex: "1",
         pointerEvents: "none"
       });
@@ -382,6 +411,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       threeScene.add(camera);
 
       const markerRoot = new THREE.Group();
+      markerRoot.matrixAutoUpdate = false;
       markerRoot.visible = false;
       threeScene.add(markerRoot);
 
@@ -433,10 +463,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       video.muted = true;
       Object.assign(video.style, {
         position: "absolute",
-        inset: "0",
-        width: "100%",
-        height: "100%",
-        objectFit: "cover",
+        top: "0",
+        left: "0",
         zIndex: "0"
       });
       mount.prepend(video);
@@ -444,7 +472,11 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
 
       const arToolkitContext = new window.THREEx.ArToolkitContext({
         cameraParametersUrl: CAMERA_PARAMETERS,
-        detectionMode: "mono"
+        detectionMode: "mono",
+        maxDetectionRate: 60,
+        canvasWidth: 640,
+        canvasHeight: 480,
+        imageSmoothingEnabled: true
       });
 
       await new Promise<void>((resolve) => {
@@ -458,7 +490,11 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         type: "pattern",
         patternUrl: HIRO_MARKER_PATTERN_URL,
         size: markerSizeM,
-        changeMatrixMode: "modelViewMatrix"
+        changeMatrixMode: "modelViewMatrix",
+        smooth: true,
+        smoothCount: 5,
+        smoothTolerance: 0.01,
+        smoothThreshold: 2
       });
 
       patchRuntimeStatus({ arjsInitialized: true });
@@ -505,20 +541,43 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           if (markerVisibleAfterUpdate) {
             markerWasSeen = true;
             lastSeen = Date.now();
+            lastMarkerMatrix.copy(markerRoot.matrix);
+            hasLastMarkerMatrix = true;
+            markerRoot.updateMatrixWorld(true);
             setModelOpacity(modelAnchor, 1);
             updateTrackingState("marker found");
           } else if (!markerWasSeen) {
             markerRoot.visible = false;
             updateTrackingState("marker searching");
           } else if (Date.now() - lastSeen < LAST_POSE_HOLD_MS) {
-            markerRoot.visible = true;
-            setModelOpacity(modelAnchor, 0.72);
+            if (hasLastMarkerMatrix) {
+              markerRoot.matrix.copy(lastMarkerMatrix);
+              markerRoot.matrixWorldNeedsUpdate = true;
+              markerRoot.visible = true;
+              markerRoot.updateMatrixWorld(true);
+              setModelOpacity(modelAnchor, 0.72);
+            } else {
+              markerRoot.visible = false;
+            }
             updateTrackingState("marker lost");
           } else {
             markerRoot.visible = false;
             setModelOpacity(modelAnchor, 1);
             updateTrackingState("marker lost");
           }
+
+          liveDebugRef.current = buildLiveDebugSnapshot({
+            arToolkitSource,
+            video,
+            markerRoot,
+            modelAnchor,
+            activeModel,
+            markerWasSeen,
+            markerVisible: markerVisibleAfterUpdate,
+            hasLastMarkerMatrix,
+            lastSeen,
+            lastTrackingState
+          });
         }
 
         renderer.render(threeScene, camera);
@@ -538,6 +597,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           if (stopped) return;
 
           const model = gltf.scene;
+          activeModel = model;
           forceVisibleModel(model);
 
           const runtimeTransform = computeSceneTransformForRuntime(
@@ -623,10 +683,24 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     <main className="fixed inset-0 overflow-hidden bg-black text-white">
       <div ref={mountRef} className="absolute inset-0" />
 
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 p-3">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 p-3">
         <p className="inline-block rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] backdrop-blur">
           {publicStatus}
         </p>
+        <div className="pointer-events-auto flex items-center gap-2">
+          {debugCopyStatus ? (
+            <span className="rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold backdrop-blur">
+              {debugCopyStatus}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="focus-ring rounded bg-white px-3 py-2 text-xs font-semibold text-black hover:bg-white/90"
+            onClick={copyDebugReport}
+          >
+            Copy debug
+          </button>
+        </div>
       </div>
 
       {showFallbackViewer ? (
@@ -651,9 +725,6 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
                 Open viewer
               </Link>
             ) : null}
-            <Link className="focus-ring rounded bg-white/15 px-3 py-2 text-xs font-semibold hover:bg-white/25" href="/ar/test">
-              Open AR test
-            </Link>
             <button
               className="focus-ring rounded bg-white px-3 py-2 text-xs font-semibold text-black hover:bg-white/90"
               onClick={() => setTrackingResetKey((value) => value + 1)}
@@ -854,6 +925,62 @@ function disposeObject(root: THREE.Object3D) {
   });
 }
 
+function buildLiveDebugSnapshot({
+  arToolkitSource,
+  video,
+  markerRoot,
+  modelAnchor,
+  activeModel,
+  markerWasSeen,
+  markerVisible,
+  hasLastMarkerMatrix,
+  lastSeen,
+  lastTrackingState
+}: {
+  arToolkitSource: { ready: boolean };
+  video: HTMLVideoElement;
+  markerRoot: THREE.Group;
+  modelAnchor: THREE.Group;
+  activeModel: THREE.Object3D | null;
+  markerWasSeen: boolean;
+  markerVisible: boolean;
+  hasLastMarkerMatrix: boolean;
+  lastSeen: number;
+  lastTrackingState: string;
+}) {
+  const now = Date.now();
+  const msSinceLastSeen = lastSeen ? now - lastSeen : null;
+
+  return {
+    sampledAt: new Date().toISOString(),
+    trackingState: lastTrackingState || "unknown",
+    arSourceReady: arToolkitSource.ready,
+    markerVisibleAfterArUpdate: markerVisible,
+    markerRootVisible: markerRoot.visible,
+    markerWasSeen,
+    hasLastMarkerMatrix,
+    poseHoldActive:
+      !markerVisible &&
+      markerWasSeen &&
+      typeof msSinceLastSeen === "number" &&
+      msSinceLastSeen < LAST_POSE_HOLD_MS,
+    msSinceLastSeen,
+    viewport: viewportDebug(),
+    video: {
+      videoWidth: video.videoWidth,
+      videoHeight: video.videoHeight,
+      clientWidth: video.clientWidth,
+      clientHeight: video.clientHeight,
+      readyState: video.readyState
+    },
+    markerMatrix: matrixDebug(markerRoot.matrix),
+    markerRootWorld: objectWorldDebug(markerRoot),
+    modelAnchorWorld: objectWorldDebug(modelAnchor),
+    modelWorld: activeModel ? objectWorldDebug(activeModel) : null,
+    modelLocal: activeModel ? modelTransformDebug(activeModel) : null
+  };
+}
+
 function markerDimensions(marker: MarkerSettings) {
   const markerGeometry = getMarkerBoardGeometry(marker);
 
@@ -901,4 +1028,60 @@ function eulerDegreesDebug(euler: THREE.Euler) {
     y: roundForDebug(THREE.MathUtils.radToDeg(finiteNumber(euler.y, 0))),
     z: roundForDebug(THREE.MathUtils.radToDeg(finiteNumber(euler.z, 0)))
   };
+}
+
+function objectWorldDebug(object: THREE.Object3D) {
+  const position = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+  const rotation = new THREE.Euler();
+
+  object.updateMatrixWorld(true);
+  object.getWorldPosition(position);
+  object.getWorldQuaternion(quaternion);
+  object.getWorldScale(scale);
+  rotation.setFromQuaternion(quaternion);
+
+  return {
+    positionM: vectorDebug(position),
+    rotationRad: eulerDebug(rotation),
+    rotationDeg: eulerDegreesDebug(rotation),
+    scale: vectorDebug(scale)
+  };
+}
+
+function matrixDebug(matrix: THREE.Matrix4) {
+  return matrix.toArray().map((value) => roundForDebug(finiteNumber(value, 0)));
+}
+
+function viewportDebug() {
+  return {
+    width: window.innerWidth,
+    height: window.innerHeight,
+    devicePixelRatio: window.devicePixelRatio,
+    screenWidth: window.screen.width,
+    screenHeight: window.screen.height,
+    orientation: window.screen.orientation?.type || ""
+  };
+}
+
+async function writeClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+
+  if (!copied) {
+    throw new Error("Clipboard copy failed.");
+  }
 }

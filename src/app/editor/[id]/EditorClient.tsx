@@ -141,7 +141,7 @@ export function EditorClient({ id }: { id: string }) {
 
     const boardImageUrl = getMarkerBoardImageUrl(marker);
     const fallbackBoardImageUrl = markerBoardImageDataUrlForStyle(
-      "technical-grid",
+      "hiro",
       marker.widthMm,
       marker.heightMm,
       marker.trackingMarkerSizeOnBoardMm,
