@@ -8,7 +8,6 @@ Production: https://q-rcode-ar.vercel.app
 
 ```bash
 npm install
-npm run build:mind
 npm run typecheck
 npm run build
 ```
@@ -23,15 +22,11 @@ npm run dev
 
 The app tracks one static MindAR image target:
 
-- `public/targets/Masteplan_PROMENADE_004.png`
 - `public/targets/masterplan.mind`
 - `public/targets/masterplan-preview.jpg`
+- `public/vendor/mind-ar/` browser runtime files
 
-Regenerate the MindAR target after replacing the source image:
-
-```bash
-npm run build:mind
-```
+The `.mind` file is generated locally from the optimized masterplan source and committed. Do not generate it during Vercel builds.
 
 Print or display the masterplan image flat. Keep the whole image visible, avoid glare, and move the phone until the image fills a useful part of the camera view.
 

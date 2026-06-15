@@ -1,8 +1,8 @@
-export const MASTERPLAN_TARGET_IMAGE_URL = "/targets/Masteplan_PROMENADE_004.png";
+export const MASTERPLAN_TARGET_IMAGE_URL = "/targets/masterplan-preview.jpg";
 export const MASTERPLAN_TARGET_PREVIEW_URL = "/targets/masterplan-preview.jpg";
 export const MASTERPLAN_TARGET_MIND_URL = "/targets/masterplan.mind";
-export const MASTERPLAN_TARGET_PIXEL_WIDTH = 14012;
-export const MASTERPLAN_TARGET_PIXEL_HEIGHT = 11633;
+export const MASTERPLAN_TARGET_PIXEL_WIDTH = 2048;
+export const MASTERPLAN_TARGET_PIXEL_HEIGHT = 1700;
 export const DEFAULT_TARGET_WIDTH_MM = 841;
 export const DEFAULT_TARGET_HEIGHT_MM = Math.round(
   DEFAULT_TARGET_WIDTH_MM * (MASTERPLAN_TARGET_PIXEL_HEIGHT / MASTERPLAN_TARGET_PIXEL_WIDTH)

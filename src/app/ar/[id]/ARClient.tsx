@@ -16,9 +16,37 @@ import {
 } from "@/lib/scene-transform";
 import type { ProjectMetadata, SceneMetadata } from "@/lib/projects";
 import { loadGltfModel } from "@/lib/three-gltf";
-import type { Controller } from "mind-ar/dist/mindar-image.prod.js";
 
-type MindARController = Controller;
+type MindARUpdate = {
+  type: string;
+  targetIndex?: number;
+  worldMatrix?: number[] | null;
+};
+
+type MindARController = {
+  inputWidth: number;
+  inputHeight: number;
+  addImageTargets(src: string): Promise<{ dimensions: Array<[number, number]> }>;
+  dummyRun(video: HTMLVideoElement): Promise<void>;
+  processVideo(video: HTMLVideoElement): void;
+  stopProcessVideo(): void;
+  getProjectionMatrix(): number[];
+};
+
+type MindARImageRuntime = {
+  Controller: new (options: {
+    inputWidth: number;
+    inputHeight: number;
+    maxTrack?: number;
+    filterMinCF?: number | null;
+    filterBeta?: number | null;
+    warmupTolerance?: number | null;
+    missTolerance?: number | null;
+    onUpdate?: (data: MindARUpdate) => void;
+  }) => MindARController;
+};
+
+const MINDAR_IMAGE_RUNTIME_URL = "/vendor/mind-ar/mindar-image.prod.js";
 
 type PublicStatus =
   | "camera loading"
@@ -314,7 +342,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       if (!mount || stopped) return;
 
       try {
-        const mindarModule = await import("mind-ar/dist/mindar-image.prod.js");
+        const mindarModule = await loadMindARImageRuntime();
         const ControllerClass = mindarModule.Controller;
 
         renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
@@ -698,6 +726,11 @@ async function ensureStaticAsset(url: string, label: string) {
   if (!response.ok) {
     throw new Error(`${label}: ${url}`);
   }
+}
+
+async function loadMindARImageRuntime() {
+  const moduleUrl = new URL(MINDAR_IMAGE_RUNTIME_URL, window.location.href).href;
+  return (await import(/* webpackIgnore: true */ moduleUrl)) as MindARImageRuntime;
 }
 
 function createPostMatrix(targetWidth: number, targetHeight: number) {
