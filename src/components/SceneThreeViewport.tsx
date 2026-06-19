@@ -4,14 +4,14 @@ import { useCallback, useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { APP_AXIS_COLORS } from "@/lib/coordinates";
+import { APP_AXIS_COLORS, applyEditorBoardSpaceRoot } from "@/lib/coordinates";
 import {
-  correctionRotationRadians,
   getImageTargetGeometry,
   type ImageTargetSettings
 } from "@/lib/placement";
 import {
   applyRuntimeSceneTransform,
+  configureModelCorrectionHierarchy,
   computeSceneTransformForRuntime,
   sceneTransformFromObject,
   type SceneScaleMetrics
@@ -46,23 +46,29 @@ export function SceneThreeViewport({
   const modelRef = useRef<THREE.Object3D | null>(null);
   const fitObjectRef = useRef<THREE.Object3D | null>(null);
   const transformObjectRef = useRef<THREE.Object3D | null>(null);
+  const scaleObjectRef = useRef<THREE.Object3D | null>(null);
   const transformRef = useRef<TransformControls | null>(null);
   const sceneRef = useRef<SceneMetadata | null>(scene);
   const baseFitScaleRef = useRef(1);
 
   const applyCurrentScene = useCallback(() => {
     const fitObject = fitObjectRef.current;
-    const transformObject = transformObjectRef.current;
+    const placementRoot = transformObjectRef.current;
+    const scaleRoot = scaleObjectRef.current;
     const currentScene = sceneRef.current;
-    if (!fitObject || !transformObject || !currentScene) return;
+    if (!fitObject || !placementRoot || !scaleRoot || !currentScene) return;
 
-    transformObject.position.set(0, 0, 0);
-    transformObject.rotation.set(0, 0, 0);
-    transformObject.scale.set(1, 1, 1);
-    transformObject.updateMatrixWorld(true);
+    placementRoot.position.set(0, 0, 0);
+    placementRoot.quaternion.identity();
+    placementRoot.scale.set(1, 1, 1);
+    scaleRoot.position.set(0, 0, 0);
+    scaleRoot.quaternion.identity();
+    scaleRoot.scale.set(1, 1, 1);
+    placementRoot.updateMatrixWorld(true);
+    scaleRoot.updateMatrixWorld(true);
 
     const runtimeTransform = computeSceneTransformForRuntime(fitObject, currentScene, target, "desktop");
-    applyRuntimeSceneTransform(transformObject, runtimeTransform);
+    applyRuntimeSceneTransform(placementRoot, scaleRoot, runtimeTransform);
     baseFitScaleRef.current = runtimeTransform.metrics.baseFitScale;
     onMetricsChange?.(runtimeTransform.metrics);
   }, [target, onMetricsChange]);
@@ -74,6 +80,11 @@ export function SceneThreeViewport({
 
   useEffect(() => {
     transformRef.current?.setMode(transformMode);
+    const targetObject =
+      transformMode === "scale" ? scaleObjectRef.current : transformObjectRef.current;
+    if (targetObject) {
+      transformRef.current?.attach(targetObject);
+    }
   }, [transformMode]);
 
   useEffect(() => {
@@ -185,19 +196,22 @@ export function SceneThreeViewport({
         orbit.enabled = !(event as { value?: boolean }).value;
       });
       transform.addEventListener("objectChange", () => {
-        const transformObject = transformObjectRef.current;
+        const placementRoot = transformObjectRef.current;
+        const scaleRoot = scaleObjectRef.current;
         const currentScene = sceneRef.current;
-        if (!transformObject || !currentScene) return;
+        if (!placementRoot || !scaleRoot || !currentScene) return;
 
         const uniformScale =
-          (Math.abs(transformObject.scale.x) +
-            Math.abs(transformObject.scale.y) +
-            Math.abs(transformObject.scale.z)) / 3;
+          (Math.abs(scaleRoot.scale.x) +
+            Math.abs(scaleRoot.scale.y) +
+            Math.abs(scaleRoot.scale.z)) / 3;
         if (Number.isFinite(uniformScale) && uniformScale > 0) {
-          transformObject.scale.setScalar(uniformScale);
+          scaleRoot.scale.setScalar(uniformScale);
         }
 
-        onSceneChange?.(sceneTransformFromObject(currentScene, transformObject, baseFitScaleRef.current));
+        onSceneChange?.(
+          sceneTransformFromObject(currentScene, placementRoot, scaleRoot, baseFitScaleRef.current)
+        );
       });
 
       const setSnap = (enabled: boolean) => {
@@ -238,28 +252,36 @@ export function SceneThreeViewport({
           }
         });
 
-        const desktopViewportTransformGroup = new THREE.Group();
+        const boardSpaceRoot = new THREE.Group();
+        const placementRoot = new THREE.Group();
         const modelCorrectionGroup = new THREE.Group();
-        const correction = correctionRotationRadians(target.correctionMode);
-        modelCorrectionGroup.rotation.set(correction.x, correction.y, correction.z);
-        desktopViewportTransformGroup.add(modelCorrectionGroup);
-        modelCorrectionGroup.add(model);
-        threeScene.add(desktopViewportTransformGroup);
+        const scaleRoot = new THREE.Group();
+        applyEditorBoardSpaceRoot(boardSpaceRoot);
+        placementRoot.add(modelCorrectionGroup);
+        configureModelCorrectionHierarchy({
+          correctionRoot: modelCorrectionGroup,
+          scaleRoot,
+          model,
+          correctionMode: target.correctionMode
+        });
+        boardSpaceRoot.add(placementRoot);
+        threeScene.add(boardSpaceRoot);
 
         modelRef.current = model;
         fitObjectRef.current = modelCorrectionGroup;
-        transformObjectRef.current = desktopViewportTransformGroup;
-        desktopViewportTransformGroup.updateMatrixWorld(true);
+        transformObjectRef.current = placementRoot;
+        scaleObjectRef.current = scaleRoot;
+        placementRoot.updateMatrixWorld(true);
         const runtimeTransform = computeSceneTransformForRuntime(
           modelCorrectionGroup,
           sceneRef.current || activeScene,
           target,
           "desktop"
         );
-        applyRuntimeSceneTransform(desktopViewportTransformGroup, runtimeTransform);
+        applyRuntimeSceneTransform(placementRoot, scaleRoot, runtimeTransform);
         baseFitScaleRef.current = runtimeTransform.metrics.baseFitScale;
         onMetricsChange?.(runtimeTransform.metrics);
-        transform?.attach(desktopViewportTransformGroup);
+        transform?.attach(transformMode === "scale" ? scaleRoot : placementRoot);
         onStatusChange?.("Scene loaded.");
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : "Unable to load GLB model.";
@@ -308,6 +330,7 @@ export function SceneThreeViewport({
       modelRef.current = null;
       fitObjectRef.current = null;
       transformObjectRef.current = null;
+      scaleObjectRef.current = null;
       transformRef.current = null;
     };
   }, [

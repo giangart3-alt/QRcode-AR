@@ -1,18 +1,19 @@
 import * as THREE from "three";
 import {
-  appPositionMmToThreeMeters,
-  appRotationDegreesToThreeRadians,
-  threePositionMetersToAppMm,
-  threeRotationRadiansToAppDegrees
+  BOARD_FROM_SOURCE_MODEL_MATRIX,
+  boardSpaceFromObject,
+  boardSpaceToEditorScene,
+  boardSpaceToMindAR,
+  placementToBoardSpaceTransform
 } from "@/lib/coordinates";
 import {
   DEFAULT_TARGET_HEIGHT_MM,
   DEFAULT_TARGET_WIDTH_MM,
-  degreesToRadians,
+  correctionRotationRadians,
   getImageTargetGeometry,
-  mmToMeters,
   normalizeDegrees,
   type ImageTargetSettings,
+  type ModelCorrectionMode,
   type PlacementMetadata
 } from "@/lib/placement";
 import type { SceneMetadata } from "@/lib/projects";
@@ -35,34 +36,65 @@ export type SceneScaleMetrics = {
 export type SceneRuntimeTransform = {
   runtime: SceneRuntimeKind;
   position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
   rotation: THREE.Euler;
   scale: number;
   metrics: SceneScaleMetrics;
   appPlacement: PlacementMetadata;
+  editorAppliedTransform: {
+    position: THREE.Vector3;
+    quaternion: THREE.Quaternion;
+    rotation: THREE.Euler;
+    scale: number;
+  };
+  mindARAppliedTransform: {
+    position: THREE.Vector3;
+    quaternion: THREE.Quaternion;
+    rotation: THREE.Euler;
+    scale: number;
+  };
 };
 
 const FIT_MARGIN = 0.9;
+
+export type ModelBoundsInfo = {
+  min: THREE.Vector3;
+  max: THREE.Vector3;
+  center: THREE.Vector3;
+  size: THREE.Vector3;
+  valid: boolean;
+  longestAxis: "x" | "y" | "z";
+};
+
+export type ModelCorrectionMetrics = {
+  correctionMode: ModelCorrectionMode;
+  sourceCenterOffset: THREE.Vector3;
+  correctionMatrix: THREE.Matrix4;
+  boundsBeforeCorrection: ModelBoundsInfo;
+  boundsAfterCorrection: ModelBoundsInfo;
+  longestAxisAfterCorrection: "x" | "y" | "z";
+};
 
 export function computeBaseFitScaleFromObject(
   model: THREE.Object3D,
   target: Pick<ImageTargetSettings, "widthMm" | "heightMm">
 ) {
-  const bounds = computeModelBounds(model);
+  const bounds = computeObjectBounds(model);
   const geometry = getImageTargetGeometry({
     widthMm: positiveNumber(target.widthMm, DEFAULT_TARGET_WIDTH_MM),
     heightMm: positiveNumber(target.heightMm, DEFAULT_TARGET_HEIGHT_MM)
   });
 
   return {
-    modelWidthM: bounds.widthM,
-    modelDepthM: bounds.depthM,
-    modelHeightM: bounds.heightM,
+    modelWidthM: Math.max(bounds.size.x, 0.001),
+    modelDepthM: Math.max(bounds.size.y, 0.001),
+    modelHeightM: Math.max(bounds.size.z, 0.001),
     targetWidthM: Math.max(geometry.widthM, 0.001),
     targetHeightM: Math.max(geometry.heightM, 0.001),
     boundsValid: bounds.valid,
     baseFitScale: Math.min(
-      geometry.widthM / bounds.widthM,
-      geometry.heightM / bounds.depthM
+      geometry.widthM / Math.max(bounds.size.x, 0.001),
+      geometry.heightM / Math.max(bounds.size.y, 0.001)
     ) * FIT_MARGIN
   };
 }
@@ -90,19 +122,19 @@ export function computeSceneTransformForRuntime(
   const appPlacement = safePlacement(scene.placement);
   const targetWidthM = Math.max(fit.targetWidthM, 0.001);
   const runtimeScale = runtime === "ar" ? displayedScale / targetWidthM : displayedScale;
+  const boardTransform = placementToBoardSpaceTransform(appPlacement, displayedScale);
+  const editorAppliedTransform = boardSpaceToEditorScene(appPlacement, displayedScale);
+  const mindARAppliedTransform = boardSpaceToMindAR(appPlacement, targetWidthM, displayedScale);
 
   return {
     runtime,
-    position:
-      runtime === "ar"
-        ? appPositionMmToMindArUnits(appPlacement.position, targetWidthM)
-        : appPositionMmToThreeMeters(appPlacement.position),
-    rotation:
-      runtime === "ar"
-        ? appRotationDegreesToMindArRadians(appPlacement.rotation)
-        : appRotationDegreesToThreeRadians(appPlacement.rotation),
-    scale: runtimeScale,
+    position: boardTransform.position,
+    quaternion: boardTransform.quaternion,
+    rotation: boardTransform.rotation,
+    scale: displayedScale,
     appPlacement,
+    editorAppliedTransform,
+    mindARAppliedTransform,
     metrics: {
       ...fit,
       displayedScale,
@@ -113,32 +145,42 @@ export function computeSceneTransformForRuntime(
 }
 
 export function applyRuntimeSceneTransform(
-  model: THREE.Object3D,
+  placementRoot: THREE.Object3D,
+  scaleRoot: THREE.Object3D,
   transform: SceneRuntimeTransform
 ) {
-  model.position.copy(transform.position);
-  model.rotation.copy(transform.rotation);
-  model.scale.setScalar(transform.scale);
-  model.updateMatrixWorld(true);
+  placementRoot.position.copy(transform.position);
+  placementRoot.quaternion.copy(transform.quaternion);
+  placementRoot.scale.setScalar(1);
+  scaleRoot.position.set(0, 0, 0);
+  scaleRoot.quaternion.identity();
+  scaleRoot.scale.setScalar(transform.scale);
+  placementRoot.updateMatrixWorld(true);
+  scaleRoot.updateMatrixWorld(true);
 }
 
 export function sceneTransformFromObject(
   scene: SceneMetadata,
-  model: THREE.Object3D,
+  placementRoot: THREE.Object3D,
+  scaleRoot: THREE.Object3D,
   baseFitScale: number
 ) {
   const displayedScale =
-    (Math.abs(model.scale.x) + Math.abs(model.scale.y) + Math.abs(model.scale.z)) / 3;
+    (Math.abs(scaleRoot.scale.x) + Math.abs(scaleRoot.scale.y) + Math.abs(scaleRoot.scale.z)) / 3;
   const normalizedScale =
     displayedScale / positiveNumber(baseFitScale, 1);
+  const boardPlacement = boardSpaceFromObject({
+    object: placementRoot,
+    scale: roundForStorage(displayedScale)
+  });
 
   return {
     ...scene,
     normalizedScale: roundForStorage(normalizedScale),
     placement: {
       ...scene.placement,
-      position: roundVector(threePositionMetersToAppMm(model.position)),
-      rotation: normalizeRotationVector(roundVector(threeRotationRadiansToAppDegrees(model.rotation))),
+      position: roundVector(boardPlacement.position),
+      rotation: normalizeRotationVector(roundVector(boardPlacement.rotation)),
       scale: roundForStorage(displayedScale)
     }
   } satisfies SceneMetadata;
@@ -171,23 +213,105 @@ export function roundForStorage(value: number) {
   return Math.round(value * 1000) / 1000;
 }
 
-function appPositionMmToMindArUnits(
-  position: PlacementMetadata["position"],
-  targetWidthM: number
-) {
-  return new THREE.Vector3(
-    mmToMeters(position.x) / targetWidthM,
-    mmToMeters(position.y) / targetWidthM,
-    mmToMeters(position.z) / targetWidthM
-  );
+export function configureModelCorrectionHierarchy({
+  correctionRoot,
+  scaleRoot,
+  model,
+  correctionMode
+}: {
+  correctionRoot: THREE.Object3D;
+  scaleRoot: THREE.Object3D;
+  model: THREE.Object3D;
+  correctionMode: ModelCorrectionMode;
+}): ModelCorrectionMetrics {
+  model.position.set(0, 0, 0);
+  model.updateMatrixWorld(true);
+
+  const boundsBeforeCorrection = computeObjectBounds(model);
+  const correctionMatrix = sourceModelCorrectionMatrix(correctionMode);
+  correctionRoot.matrixAutoUpdate = false;
+  correctionRoot.matrix.copy(correctionMatrix);
+  correctionRoot.matrixWorldNeedsUpdate = true;
+
+  scaleRoot.position.set(0, 0, 0);
+  scaleRoot.quaternion.identity();
+  scaleRoot.scale.setScalar(1);
+
+  if (scaleRoot.parent !== correctionRoot) {
+    correctionRoot.add(scaleRoot);
+  }
+
+  if (model.parent !== scaleRoot) {
+    scaleRoot.add(model);
+  }
+
+  correctionRoot.updateMatrixWorld(true);
+  const uncenteredBounds = computeObjectBounds(correctionRoot);
+  const sourceCenterOffset = uncenteredBounds.center
+    .clone()
+    .negate()
+    .applyMatrix4(correctionMatrix.clone().invert());
+
+  model.position.copy(sourceCenterOffset);
+  model.updateMatrixWorld(true);
+  correctionRoot.updateMatrixWorld(true);
+
+  const boundsAfterCorrection = computeObjectBounds(correctionRoot);
+
+  return {
+    correctionMode,
+    sourceCenterOffset,
+    correctionMatrix,
+    boundsBeforeCorrection,
+    boundsAfterCorrection,
+    longestAxisAfterCorrection: boundsAfterCorrection.longestAxis
+  };
 }
 
-function appRotationDegreesToMindArRadians(rotation: PlacementMetadata["rotation"]) {
-  return new THREE.Euler(
-    degreesToRadians(rotation.x),
-    degreesToRadians(rotation.y),
-    degreesToRadians(rotation.z)
+export function computeObjectBounds(object: THREE.Object3D): ModelBoundsInfo {
+  object.updateWorldMatrix(true, true);
+  const parentInverse = object.parent
+    ? object.parent.matrixWorld.clone().invert()
+    : new THREE.Matrix4();
+  const box = new THREE.Box3();
+
+  object.traverse((child) => {
+    if (!(child instanceof THREE.Mesh) || !child.geometry) return;
+    if (!child.geometry.boundingBox) {
+      child.geometry.computeBoundingBox();
+    }
+    if (!child.geometry.boundingBox) return;
+
+    const childBox = child.geometry.boundingBox.clone();
+    childBox.applyMatrix4(parentInverse.clone().multiply(child.matrixWorld));
+    box.union(childBox);
+  });
+
+  const valid = isFiniteBox(box) && !box.isEmpty();
+  const fallbackBox = new THREE.Box3(
+    new THREE.Vector3(-0.5, -0.5, -0.5),
+    new THREE.Vector3(0.5, 0.5, 0.5)
   );
+  const safeBox = valid ? box : fallbackBox;
+  const size = safeBox.getSize(new THREE.Vector3());
+
+  return {
+    min: safeBox.min.clone(),
+    max: safeBox.max.clone(),
+    center: safeBox.getCenter(new THREE.Vector3()),
+    size,
+    valid,
+    longestAxis: longestDimensionAxis(size)
+  };
+}
+
+export function sourceModelCorrectionMatrix(mode: ModelCorrectionMode) {
+  const correction = correctionRotationRadians(mode);
+  const sourceRotation = new THREE.Matrix4().makeRotationFromEuler(
+    new THREE.Euler(correction.x, correction.y, correction.z, "XYZ")
+  );
+
+  return BOARD_FROM_SOURCE_MODEL_MATRIX.clone().multiply(sourceRotation);
 }
 
 function roundVector<T extends { x: number; y: number; z: number }>(vector: T) {
@@ -206,34 +330,6 @@ function normalizeRotationVector<T extends { x: number; y: number; z: number }>(
   };
 }
 
-function computeModelBounds(model: THREE.Object3D) {
-  const savedPosition = model.position.clone();
-  const savedQuaternion = model.quaternion.clone();
-  const savedScale = model.scale.clone();
-
-  model.position.set(0, 0, 0);
-  model.quaternion.identity();
-  model.scale.set(1, 1, 1);
-  model.updateMatrixWorld(true);
-
-  const box = new THREE.Box3().setFromObject(model);
-
-  model.position.copy(savedPosition);
-  model.quaternion.copy(savedQuaternion);
-  model.scale.copy(savedScale);
-  model.updateMatrixWorld(true);
-
-  const valid = isFiniteBox(box) && !box.isEmpty();
-  const size = valid ? box.getSize(new THREE.Vector3()) : new THREE.Vector3(1, 1, 1);
-
-  return {
-    valid,
-    widthM: Math.max(size.x, 0.001),
-    depthM: Math.max(size.z, 0.001),
-    heightM: Math.max(size.y, 0.001)
-  };
-}
-
 function isFiniteBox(box: THREE.Box3) {
   return (
     Number.isFinite(box.min.x) &&
@@ -243,6 +339,12 @@ function isFiniteBox(box: THREE.Box3) {
     Number.isFinite(box.max.y) &&
     Number.isFinite(box.max.z)
   );
+}
+
+function longestDimensionAxis(size: THREE.Vector3): "x" | "y" | "z" {
+  if (size.x >= size.y && size.x >= size.z) return "x";
+  if (size.y >= size.x && size.y >= size.z) return "y";
+  return "z";
 }
 
 function safePlacement(placement: PlacementMetadata): PlacementMetadata {

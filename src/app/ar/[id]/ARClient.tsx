@@ -3,16 +3,20 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import { applyMindARBoardSpaceRoot } from "@/lib/coordinates";
 import {
   MASTERPLAN_TARGET_IMAGE_URL,
-  correctionRotationRadians,
   getImageTargetGeometry,
   type ImageTargetSettings,
+  type PlacementMetadata,
   type ModelCorrectionMode
 } from "@/lib/placement";
 import {
+  applyRuntimeSceneTransform,
+  configureModelCorrectionHierarchy,
   computeSceneTransformForRuntime,
-  type SceneRuntimeTransform
+  type ModelBoundsInfo,
+  type ModelCorrectionMetrics
 } from "@/lib/scene-transform";
 import type { ProjectMetadata, SceneMetadata } from "@/lib/projects";
 import { loadGltfModel } from "@/lib/three-gltf";
@@ -100,8 +104,16 @@ type RuntimeStatus = {
   modelLocalTransform: TransformDebug | null;
   modelWorldTransform: TransformDebug | null;
   desktopViewportTransform: TransformDebug | null;
+  canonicalPlacement: PlacementMetadata | null;
+  editorAppliedTransform: TransformDebug | null;
+  mindARAppliedTransform: TransformDebug | null;
+  correctionRootTransform: TransformDebug | null;
+  scaleRootTransform: TransformDebug | null;
   rawBounds: BoundsDebug | null;
   correctedBounds: BoundsDebug | null;
+  boundsBeforeCorrection: BoundsDebug | null;
+  boundsAfterCorrection: BoundsDebug | null;
+  longestDimensionAxisAfterTransforms: string;
   currentCorrectionMode: ModelCorrectionMode;
   targetPhysicalSize: {
     widthMm: number;
@@ -149,8 +161,16 @@ const INITIAL_STATUS: RuntimeStatus = {
   modelLocalTransform: null,
   modelWorldTransform: null,
   desktopViewportTransform: null,
+  canonicalPlacement: null,
+  editorAppliedTransform: null,
+  mindARAppliedTransform: null,
+  correctionRootTransform: null,
+  scaleRootTransform: null,
   rawBounds: null,
   correctedBounds: null,
+  boundsBeforeCorrection: null,
+  boundsAfterCorrection: null,
+  longestDimensionAxisAfterTransforms: "",
   currentCorrectionMode: "NONE",
   targetPhysicalSize: INITIAL_TARGET_SIZE,
   runtimeScale: null,
@@ -280,6 +300,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     let renderer: THREE.WebGLRenderer | null = null;
     let video: HTMLVideoElement | null = null;
     let activeModel: THREE.Object3D | null = null;
+    let activeCorrectionMetrics: ModelCorrectionMetrics | null = null;
     let targetVisible = false;
     const postMatrix = new THREE.Matrix4();
 
@@ -307,8 +328,16 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         modelLocalTransform: null,
         modelWorldTransform: null,
         desktopViewportTransform: null,
+        canonicalPlacement: null,
+        editorAppliedTransform: null,
+        mindARAppliedTransform: null,
+        correctionRootTransform: null,
+        scaleRootTransform: null,
         rawBounds: null,
         correctedBounds: null,
+        boundsBeforeCorrection: null,
+        boundsAfterCorrection: null,
+        longestDimensionAxisAfterTransforms: "",
         runtimeScale: null,
         lastError: ""
       });
@@ -382,13 +411,12 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         const boardReferenceGroup = new THREE.Group();
         const desktopViewportTransformGroup = new THREE.Group();
         const modelCorrectionGroup = new THREE.Group();
-        const correction = correctionRotationRadians(target.correctionMode);
-        modelCorrectionGroup.rotation.set(correction.x, correction.y, correction.z);
+        const scaleRoot = new THREE.Group();
+        applyMindARBoardSpaceRoot(boardReferenceGroup, getImageTargetGeometry(target).widthM);
         targetAnchor.add(boardReferenceGroup);
         boardReferenceGroup.add(desktopViewportTransformGroup);
-        desktopViewportTransformGroup.add(modelCorrectionGroup);
 
-        const debugCube = createDebugCube(target);
+        const debugCube = createDebugCube();
         boardReferenceGroup.add(debugCube);
 
         const targetAxes = new THREE.AxesHelper(0.18);
@@ -438,7 +466,9 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
               boardReferenceGroup,
               desktopViewportTransformGroup,
               modelCorrectionGroup,
+              scaleRoot,
               activeModel,
+              activeCorrectionMetrics,
               targetVisible
             });
           }
@@ -485,17 +515,26 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
             activeModel = model;
             forceVisibleModel(model);
 
-            const runtimeTransform = computeSceneTransformForRuntime(
+            activeCorrectionMetrics = configureModelCorrectionHierarchy({
+              correctionRoot: modelCorrectionGroup,
+              scaleRoot,
               model,
+              correctionMode: target.correctionMode
+            });
+            const runtimeTransform = computeSceneTransformForRuntime(
+              modelCorrectionGroup,
               activeSceneForRuntime,
               target,
               "ar"
             );
-            applyTransformToGroup(desktopViewportTransformGroup, runtimeTransform);
-            modelCorrectionGroup.add(model);
+            if (modelCorrectionGroup.parent !== desktopViewportTransformGroup) {
+              desktopViewportTransformGroup.add(modelCorrectionGroup);
+            }
+            applyRuntimeSceneTransform(desktopViewportTransformGroup, scaleRoot, runtimeTransform);
             model.updateMatrixWorld(true);
             modelCorrectionGroup.updateMatrixWorld(true);
             desktopViewportTransformGroup.updateMatrixWorld(true);
+            const correctedWorldBounds = boundsDebug(modelCorrectionGroup);
 
             const scaleDebug = {
               baseFitScale: roundForDebug(runtimeTransform.metrics.baseFitScale),
@@ -514,11 +553,23 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
               modelLoaded: true,
               modelError: "",
               modelAttachedToTarget: true,
-              desktopViewportTransform: objectLocalDebug(desktopViewportTransformGroup),
+              canonicalPlacement: runtimeTransform.appPlacement,
+              desktopViewportTransform: transformDebugFromRuntime(runtimeTransform.editorAppliedTransform),
+              editorAppliedTransform: transformDebugFromRuntime(runtimeTransform.editorAppliedTransform),
+              mindARAppliedTransform: transformDebugFromRuntime(runtimeTransform.mindARAppliedTransform),
+              correctionRootTransform: objectLocalDebug(modelCorrectionGroup),
+              scaleRootTransform: objectLocalDebug(scaleRoot),
               modelLocalTransform: objectLocalDebug(model),
               modelWorldTransform: objectWorldDebug(model),
               rawBounds: boundsDebug(model),
-              correctedBounds: boundsDebug(modelCorrectionGroup),
+              correctedBounds: correctedWorldBounds,
+              boundsBeforeCorrection: activeCorrectionMetrics
+                ? boundsInfoDebug(activeCorrectionMetrics.boundsBeforeCorrection)
+                : null,
+              boundsAfterCorrection: activeCorrectionMetrics
+                ? boundsInfoDebug(activeCorrectionMetrics.boundsAfterCorrection)
+                : null,
+              longestDimensionAxisAfterTransforms: longestAxisFromDebugBounds(correctedWorldBounds),
               runtimeScale: scaleDebug,
               lastError: runtimeTransform.metrics.scaleFallbackReason || ""
             });
@@ -809,22 +860,14 @@ function resizeMindArView({
   renderer.setSize(container.clientWidth, container.clientHeight);
 }
 
-function createDebugCube(target: ImageTargetSettings) {
-  const widthM = Math.max(getImageTargetGeometry(target).widthM, 0.001);
-  const size = 50 / 1000 / widthM;
+function createDebugCube() {
+  const size = 50 / 1000;
   const cube = new THREE.Mesh(
     new THREE.BoxGeometry(size, size, size),
     new THREE.MeshBasicMaterial({ color: 0xff1f1f })
   );
   cube.position.set(0, 0, size / 2);
   return cube;
-}
-
-function applyTransformToGroup(group: THREE.Group, transform: SceneRuntimeTransform) {
-  group.position.copy(transform.position);
-  group.rotation.copy(transform.rotation);
-  group.scale.setScalar(transform.scale);
-  group.updateMatrixWorld(true);
 }
 
 function targetSizeDebug(target: Pick<ImageTargetSettings, "widthMm" | "heightMm">) {
@@ -838,13 +881,31 @@ function targetSizeDebug(target: Pick<ImageTargetSettings, "widthMm" | "heightMm
   };
 }
 
+function transformDebugFromRuntime(transform: {
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  rotation: THREE.Euler;
+  scale: number;
+}): TransformDebug {
+  void transform.rotation;
+  const rotation = new THREE.Euler().setFromQuaternion(transform.quaternion, "XYZ");
+
+  return {
+    position: vectorDebug(transform.position),
+    rotation: eulerDegreesDebug(rotation),
+    scale: vectorDebug(new THREE.Vector3(transform.scale, transform.scale, transform.scale))
+  };
+}
+
 function buildLiveDebugSnapshot({
   video,
   targetAnchor,
   boardReferenceGroup,
   desktopViewportTransformGroup,
   modelCorrectionGroup,
+  scaleRoot,
   activeModel,
+  activeCorrectionMetrics,
   targetVisible
 }: {
   video: HTMLVideoElement;
@@ -852,9 +913,13 @@ function buildLiveDebugSnapshot({
   boardReferenceGroup: THREE.Group;
   desktopViewportTransformGroup: THREE.Group;
   modelCorrectionGroup: THREE.Group;
+  scaleRoot: THREE.Group;
   activeModel: THREE.Object3D | null;
+  activeCorrectionMetrics: ModelCorrectionMetrics | null;
   targetVisible: boolean;
 }) {
+  const correctedBounds = boundsDebug(modelCorrectionGroup);
+
   return {
     sampledAt: new Date().toISOString(),
     trackingMode: "MindAR",
@@ -871,8 +936,17 @@ function buildLiveDebugSnapshot({
     boardReferenceWorld: objectWorldDebug(boardReferenceGroup),
     desktopViewportTransform: objectLocalDebug(desktopViewportTransformGroup),
     modelCorrectionTransform: objectLocalDebug(modelCorrectionGroup),
+    scaleRootTransform: objectLocalDebug(scaleRoot),
     modelWorld: activeModel ? objectWorldDebug(activeModel) : null,
-    modelLocal: activeModel ? objectLocalDebug(activeModel) : null
+    modelLocal: activeModel ? objectLocalDebug(activeModel) : null,
+    boundsBeforeCorrection: activeCorrectionMetrics
+      ? boundsInfoDebug(activeCorrectionMetrics.boundsBeforeCorrection)
+      : null,
+    boundsAfterCorrection: activeCorrectionMetrics
+      ? boundsInfoDebug(activeCorrectionMetrics.boundsAfterCorrection)
+      : null,
+    correctedBounds,
+    longestDimensionAxisAfterTransforms: longestAxisFromDebugBounds(correctedBounds)
   };
 }
 
@@ -923,6 +997,22 @@ function boundsDebug(object: THREE.Object3D): BoundsDebug {
   };
 }
 
+function boundsInfoDebug(bounds: ModelBoundsInfo): BoundsDebug {
+  return {
+    min: vectorDebug(bounds.min),
+    max: vectorDebug(bounds.max),
+    size: vectorDebug(bounds.size),
+    valid: bounds.valid
+  };
+}
+
+function longestAxisFromDebugBounds(bounds: BoundsDebug) {
+  const { size } = bounds;
+  if (size.x >= size.y && size.x >= size.z) return "x";
+  if (size.y >= size.x && size.y >= size.z) return "y";
+  return "z";
+}
+
 function isFiniteBox(box: THREE.Box3) {
   return (
     Number.isFinite(box.min.x) &&
@@ -935,6 +1025,21 @@ function isFiniteBox(box: THREE.Box3) {
 }
 
 function objectLocalDebug(object: THREE.Object3D): TransformDebug {
+  if (!object.matrixAutoUpdate) {
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const rotation = new THREE.Euler();
+    object.matrix.decompose(position, quaternion, scale);
+    rotation.setFromQuaternion(quaternion);
+
+    return {
+      position: vectorDebug(position),
+      rotation: eulerDegreesDebug(rotation),
+      scale: vectorDebug(scale)
+    };
+  }
+
   return {
     position: vectorDebug(object.position),
     rotation: eulerDegreesDebug(object.rotation),
