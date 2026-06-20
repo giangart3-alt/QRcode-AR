@@ -927,8 +927,11 @@ function SceneInspector({
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={project.target.previewUrl || project.target.imageUrl}
-            alt="Marker-frame masterplan image target"
-            className="aspect-[2048/1700] w-full object-contain"
+            alt="A0 multi-marker tracking sheet"
+            className="w-full object-contain"
+            style={{
+              aspectRatio: `${project.target.pixelWidth || 1189} / ${project.target.pixelHeight || 841}`
+            }}
           />
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2">
@@ -964,6 +967,11 @@ function SceneInspector({
           Target version: {project.target.targetVersion}. {project.target.pixelWidth} x{" "}
           {project.target.pixelHeight}px, {formatNumber(project.target.widthMm)} x{" "}
           {formatNumber(project.target.heightMm)}mm.
+          {project.target.markerSheet ? (
+            <>
+              {" "}Sheet: {project.target.markerSheet.sheetId}, {project.target.markerSheet.markers.length} markers.
+            </>
+          ) : null}
         </p>
 
         <div className="mt-3 rounded-lg border border-dashed border-[var(--line)] bg-[var(--soft)] p-3">

@@ -5,122 +5,119 @@ import sharp from "sharp";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
-const outputRoot = path.join(
-  projectRoot,
-  "public",
-  "tracking-sheets",
-  "marker-sheet-v1",
-);
+const sheetId = "marker-sheet-a0-v1";
+const version = "1.0.0";
+const outputRoot = path.join(projectRoot, "public", "tracking-sheets", sheetId);
 const markersRoot = path.join(outputRoot, "markers");
 
-const sheetId = "marker-sheet-v1";
-const version = "1.0.0";
-const markerSize = { width: 0.071, height: 0.1 };
-
-const formats = {
-  A0: { widthMm: 1189, heightMm: 841 },
-  A1: { widthMm: 841, heightMm: 594 },
-  A2: { widthMm: 594, heightMm: 420 },
-  A3: { widthMm: 420, heightMm: 297 },
-  A4: { widthMm: 297, heightMm: 210 },
+const sheet = {
+  id: sheetId,
+  format: "A0",
+  orientation: "landscape",
+  widthMm: 1189,
+  heightMm: 841,
 };
 
+const markerSizeMm = 84.1;
+const markerWidth = markerSizeMm / sheet.widthMm;
+const markerHeight = markerSizeMm / sheet.heightMm;
+
 const contentArea = {
-  x: 0.18,
-  y: 0.17,
-  width: 0.64,
-  height: 0.66,
+  x: 214.02 / sheet.widthMm,
+  y: 142.97 / sheet.heightMm,
+  width: 760.96 / sheet.widthMm,
+  height: 555.06 / sheet.heightMm,
 };
 
 const markers = [
   {
     id: "M00_TopLeft",
     targetIndex: 0,
-    asset: "markers/M00_TopLeft.svg",
-    x: 0.05,
-    y: 0.06,
+    x: 59.45 / sheet.widthMm,
+    y: 50.46 / sheet.heightMm,
     rotationDeg: 0,
-    role: "corner",
+    role: "top-left",
     pattern: "asymmetric-nested-square",
   },
   {
     id: "M01_Top",
     targetIndex: 1,
-    asset: "markers/M01_Top.svg",
-    x: 0.4645,
-    y: 0.052,
+    x: 552.45 / sheet.widthMm,
+    y: 50.46 / sheet.heightMm,
     rotationDeg: 0,
-    role: "edge",
+    role: "top-center",
     pattern: "offset-diamond",
   },
   {
     id: "M02_TopRight",
     targetIndex: 2,
-    asset: "markers/M02_TopRight.svg",
-    x: 0.879,
-    y: 0.06,
+    x: 1045.45 / sheet.widthMm,
+    y: 50.46 / sheet.heightMm,
     rotationDeg: 0,
-    role: "corner",
+    role: "top-right",
     pattern: "diagonal-split",
   },
   {
     id: "M03_Left",
     targetIndex: 3,
-    asset: "markers/M03_Left.svg",
-    x: 0.05,
-    y: 0.45,
+    x: 59.45 / sheet.widthMm,
+    y: 378.45 / sheet.heightMm,
     rotationDeg: -90,
-    role: "edge",
+    role: "left-center",
     pattern: "bullseye-notch",
   },
   {
     id: "M04_Right",
     targetIndex: 4,
-    asset: "markers/M04_Right.svg",
-    x: 0.879,
-    y: 0.45,
+    x: 1045.45 / sheet.widthMm,
+    y: 378.45 / sheet.heightMm,
     rotationDeg: 90,
-    role: "edge",
+    role: "right-center",
     pattern: "blocky-modules",
   },
   {
     id: "M05_BottomLeft",
     targetIndex: 5,
-    asset: "markers/M05_BottomLeft.svg",
-    x: 0.05,
-    y: 0.84,
+    x: 59.45 / sheet.widthMm,
+    y: 706.44 / sheet.heightMm,
     rotationDeg: 180,
-    role: "corner",
+    role: "bottom-left",
     pattern: "crosshair-corners",
   },
   {
     id: "M06_Bottom",
     targetIndex: 6,
-    asset: "markers/M06_Bottom.svg",
-    x: 0.4645,
-    y: 0.848,
+    x: 552.45 / sheet.widthMm,
+    y: 706.44 / sheet.heightMm,
     rotationDeg: 180,
-    role: "edge",
+    role: "bottom-center",
     pattern: "staircase",
   },
   {
     id: "M07_BottomRight",
     targetIndex: 7,
-    asset: "markers/M07_BottomRight.svg",
-    x: 0.879,
-    y: 0.84,
+    x: 1045.45 / sheet.widthMm,
+    y: 706.44 / sheet.heightMm,
     rotationDeg: 180,
-    role: "corner",
+    role: "bottom-right",
     pattern: "quadrant-cutout",
   },
 ].map((marker) => ({
   ...marker,
-  width: markerSize.width,
-  height: markerSize.height,
+  width: markerWidth,
+  height: markerHeight,
+  widthMm: markerSizeMm,
+  heightMm: markerSizeMm,
+  assetPng: `markers/${marker.id}.png`,
+  assetSvg: `markers/${marker.id}.svg`,
 }));
 
-function svgDoc(body, attrs = "") {
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" ${attrs}>
+function fixed(value, places = 6) {
+  return Number(value.toFixed(places));
+}
+
+function svgDoc(body) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <rect width="512" height="512" fill="#fff"/>
 ${body}
 </svg>
@@ -221,18 +218,28 @@ function markerSvg(id) {
   return svgDoc(bodies[id]);
 }
 
-function layoutPreviewSvg(formatName) {
-  const format = formats[formatName];
-  const width = format.widthMm;
-  const height = format.heightMm;
-  const safe = 24;
-  const cx = (contentArea.x + contentArea.width / 2) * width;
-  const cy = (contentArea.y + contentArea.height / 2) * height;
+function layoutPreviewSvg() {
+  const width = sheet.widthMm;
+  const height = sheet.heightMm;
+  const safe = {
+    x: 41.615,
+    y: 37.845,
+    width: 1105.77,
+    height: 765.31,
+  };
+  const content = {
+    x: contentArea.x * width,
+    y: contentArea.y * height,
+    width: contentArea.width * width,
+    height: contentArea.height * height,
+  };
+  const cx = content.x + content.width / 2;
+  const cy = content.y + content.height / 2;
   const gridLines = Array.from({ length: 7 }, (_, index) => {
-    const x = (contentArea.x + ((index + 1) * contentArea.width) / 8) * width;
-    const y = (contentArea.y + ((index + 1) * contentArea.height) / 8) * height;
-    return `  <line x1="${x.toFixed(2)}" y1="${contentArea.y * height}" x2="${x.toFixed(2)}" y2="${(contentArea.y + contentArea.height) * height}" stroke="#d8d8d8" stroke-width="0.7"/>
-  <line x1="${contentArea.x * width}" y1="${y.toFixed(2)}" x2="${(contentArea.x + contentArea.width) * width}" y2="${y.toFixed(2)}" stroke="#d8d8d8" stroke-width="0.7"/>`;
+    const x = content.x + ((index + 1) * content.width) / 8;
+    const y = content.y + ((index + 1) * content.height) / 8;
+    return `  <line x1="${x.toFixed(2)}" y1="${content.y.toFixed(2)}" x2="${x.toFixed(2)}" y2="${(content.y + content.height).toFixed(2)}" stroke="#d8d8d8" stroke-width="0.7"/>
+  <line x1="${content.x.toFixed(2)}" y1="${y.toFixed(2)}" x2="${(content.x + content.width).toFixed(2)}" y2="${y.toFixed(2)}" stroke="#d8d8d8" stroke-width="0.7"/>`;
   }).join("\n");
 
   const markerImages = markers
@@ -258,11 +265,11 @@ ${markerSvg(marker.id)
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
   <rect width="${width}" height="${height}" fill="#fff"/>
-  <rect x="${safe}" y="${safe}" width="${width - safe * 2}" height="${height - safe * 2}" fill="none" stroke="#000" stroke-width="1.2"/>
-  <rect x="${(contentArea.x * width).toFixed(2)}" y="${(contentArea.y * height).toFixed(2)}" width="${(contentArea.width * width).toFixed(2)}" height="${(contentArea.height * height).toFixed(2)}" fill="#f7f7f7" stroke="#000" stroke-width="1.4"/>
+  <rect x="${safe.x}" y="${safe.y}" width="${safe.width}" height="${safe.height}" fill="none" stroke="#000" stroke-width="1.2"/>
+  <rect x="${content.x.toFixed(2)}" y="${content.y.toFixed(2)}" width="${content.width.toFixed(2)}" height="${content.height.toFixed(2)}" fill="#f7f7f7" stroke="#000" stroke-width="1.1"/>
 ${gridLines}
-  <line x1="${(contentArea.x * width).toFixed(2)}" y1="${cy.toFixed(2)}" x2="${((contentArea.x + contentArea.width) * width).toFixed(2)}" y2="${cy.toFixed(2)}" stroke="#000" stroke-width="1"/>
-  <line x1="${cx.toFixed(2)}" y1="${(contentArea.y * height).toFixed(2)}" x2="${cx.toFixed(2)}" y2="${((contentArea.y + contentArea.height) * height).toFixed(2)}" stroke="#000" stroke-width="1"/>
+  <line x1="${content.x.toFixed(2)}" y1="${cy.toFixed(2)}" x2="${(content.x + content.width).toFixed(2)}" y2="${cy.toFixed(2)}" stroke="#000" stroke-width="0.9"/>
+  <line x1="${cx.toFixed(2)}" y1="${content.y.toFixed(2)}" x2="${cx.toFixed(2)}" y2="${(content.y + content.height).toFixed(2)}" stroke="#000" stroke-width="0.9"/>
 ${markerImages}
 </svg>
 `;
@@ -272,106 +279,60 @@ function manifest() {
   return {
     sheetId,
     version,
-    defaultFormat: "A0",
-    orientation: "landscape",
+    format: sheet.format,
+    orientation: sheet.orientation,
+    imageTargetMode: "multi-marker-a0",
+    mindUrl: `${sheetId}.mind`,
+    previewPng: "layout-preview-a0.png",
+    previewSvg: "layout-preview-a0.svg",
+    physicalSize: {
+      widthMm: sheet.widthMm,
+      heightMm: sheet.heightMm,
+    },
     coordinateSystem: {
       origin: "sheet-center",
-      xAxis: "sheet-right",
-      yAxis: "sheet-up",
+      xAxis: "right",
+      yAxis: "up",
       zAxis: "sheet-normal",
-      units: "normalized-and-mm",
-      normalizedCoordinates: {
-        origin: "sheet-top-left",
-        xAxis: "sheet-right",
-        yAxis: "sheet-down",
-        range: "0..1",
-        markerXy: "top-left of printed marker slot before rotation",
-        markerWidthHeight: "normalized against sheet width and sheet height",
-      },
-      arConversion: {
-        xMm: "(markerCenterXNormalized - 0.5) * sheetWidthMm",
-        yMm: "(0.5 - markerCenterYNormalized) * sheetHeightMm",
-        markerCenterXNormalized: "marker.x + marker.width / 2",
-        markerCenterYNormalized: "marker.y + marker.height / 2",
-      },
-    },
-    formats,
-    print: {
-      safeMarginNormalized: { x: 0.035, y: 0.045 },
-      colorMode: "black-and-white",
-      notes: [
-        "Export marker PNGs individually and compile them into one multi-target .mind file.",
-        "Keep the existing single-image target available until the multi-marker runtime is implemented.",
-      ],
+      layoutCoordinates: "normalized-top-left",
     },
     contentArea: {
-      ...contentArea,
-      role: "masterplan-placeholder",
-      trackingRequired: false,
+      x: fixed(contentArea.x),
+      y: fixed(contentArea.y),
+      width: fixed(contentArea.width),
+      height: fixed(contentArea.height),
     },
-    markers,
+    markers: markers.map((marker) => ({
+      id: marker.id,
+      targetIndex: marker.targetIndex,
+      assetPng: marker.assetPng,
+      assetSvg: marker.assetSvg,
+      x: fixed(marker.x),
+      y: fixed(marker.y),
+      width: fixed(marker.width),
+      height: fixed(marker.height),
+      widthMm: marker.widthMm,
+      heightMm: marker.heightMm,
+      rotationDeg: marker.rotationDeg,
+      role: marker.role,
+      pattern: marker.pattern,
+    })),
   };
 }
 
 function readme() {
-  return `# Marker Sheet v1
+  return `# Marker Sheet A0 v1
 
-This folder defines the export-ready assets for the QRcode-AR multi-marker tracking sheet.
+This is the active multi-marker tracking sheet for QRcode-AR.
 
-The current app can keep using the existing single-image MindAR target as a fallback. This sheet is the next architecture: one printed sheet with multiple local marker targets around the masterplan area.
+- Format: A0 landscape, ${sheet.widthMm} x ${sheet.heightMm} mm
+- Runtime target file: \`${sheetId}.mind\`
+- Manifest: \`tracking-sheet-manifest.json\`
+- Target order: \`markers/*.png\` sorted by \`targetIndex\`
 
-## Why this exists
-
-The old approach tracks the whole printed masterplan as one large image target. That works only when the camera sees enough of the complete sheet. With local markers, each marker becomes its own MindAR target. If the phone sees only one marker, the app can still estimate that marker pose and reconstruct the global sheet pose from the manifest.
-
-## Runtime model
-
-1. Export each marker image from \`markers/*.png\`.
-2. Compile the marker images into one multi-target \`.mind\` file.
-3. Keep \`targetIndex\` in the MindAR compiler order aligned with \`tracking-sheet-manifest.json\`.
-4. When MindAR detects marker N, map \`targetIndex\` back to the marker id.
-5. Use the marker transform plus the manifest's normalized position, size, and rotation to compute the sheet transform.
-6. Attach the AR model to the reconstructed sheet pose.
-7. If multiple markers are visible, average or fuse the candidate sheet poses for stability.
-
-Start with MindAR \`maxTrack\` at 1 or 2. The system still benefits from many targets because the visible marker can change as the camera moves, without requiring all targets to track at once.
-
-## Coordinate system
-
-Manifest marker coordinates are normalized from the sheet top-left:
-
-- \`x\`, \`y\`: top-left of the marker slot before rotation.
-- \`width\`, \`height\`: normalized against sheet width and sheet height.
-- \`rotationDeg\`: printed rotation of the marker asset around its own center.
-
-For AR placement, convert marker centers to sheet-centered millimeters:
-
-\`\`\`text
-markerCenterX = marker.x + marker.width / 2
-markerCenterY = marker.y + marker.height / 2
-xMm = (markerCenterX - 0.5) * sheetWidthMm
-yMm = (0.5 - markerCenterY) * sheetHeightMm
-\`\`\`
-
-The AR sheet coordinate system uses x to the right, y up, and z normal to the sheet.
-
-## Figma and JSON
-
-Figma is the visual source of truth for presentation and export. The JSON manifest is the technical source of truth for runtime reconstruction. Figma node names mirror the manifest:
-
-- \`sheet:A0|orientation:landscape\`
-- \`marker:M00_TopLeft|targetIndex:0\`
-- \`content:masterplan\`
-- \`export:tracking-sheet-v1\`
-
-Use the Figma file or the SVG assets here to export printable sheet previews. Do not replace the active runtime target until the multi-target \`.mind\` file and marker-to-sheet pose conversion are implemented.
-
-## Generated files
-
-- \`tracking-sheet-manifest.json\`: normalized layout and marker metadata.
-- \`markers/*.svg\`: vector marker targets for Figma/plugin export and source control.
-- \`markers/*.png\`: raster marker targets ready for MindAR compilation.
-- \`layout-preview-a0.svg/png\`, \`layout-preview-a1.svg/png\`, \`layout-preview-a3.svg/png\`: sheet previews.
+The full sheet is not a single image target. Each marker is compiled as an
+individual MindAR target, and the app reconstructs the full A0 sheet pose from
+the detected marker's known sheet position.
 `;
 }
 
@@ -389,13 +350,9 @@ async function main() {
     await writePngFromSvg(svg, `${base}.png`, 1024);
   }
 
-  for (const formatName of ["A0", "A1", "A3"]) {
-    const svg = layoutPreviewSvg(formatName);
-    const base = path.join(outputRoot, `layout-preview-${formatName.toLowerCase()}`);
-    await writeFile(`${base}.svg`, svg, "utf8");
-    await writePngFromSvg(svg, `${base}.png`, Math.round(formats[formatName].widthMm * 3));
-  }
-
+  const previewSvg = layoutPreviewSvg();
+  await writeFile(path.join(outputRoot, "layout-preview-a0.svg"), previewSvg, "utf8");
+  await writePngFromSvg(previewSvg, path.join(outputRoot, "layout-preview-a0.png"), sheet.widthMm * 3);
   await writeFile(
     path.join(outputRoot, "tracking-sheet-manifest.json"),
     `${JSON.stringify(manifest(), null, 2)}\n`,
@@ -406,7 +363,7 @@ async function main() {
   return {
     outputRoot,
     markerCount: markers.length,
-    previews: ["A0", "A1", "A3"],
+    preview: "A0",
   };
 }
 

@@ -12,6 +12,7 @@ import {
   MASTERPLAN_TARGET_VERSION,
   getImageTargetGeometry,
   type ImageTargetSettings,
+  type MarkerSheetMarker,
   type PlacementMetadata,
   type ModelCorrectionMode
 } from "@/lib/placement";
@@ -107,6 +108,11 @@ type DeviceProfile = {
 type TrackingPoseUpdate = {
   matrix: THREE.Matrix4;
   timestampMs: number;
+  targetIndex: number;
+  markerId: string;
+  markerRole: string;
+  visibleMarkerCount: number;
+  poseSource: MultiMarkerPoseSource;
 };
 
 type TrackingState = {
@@ -115,6 +121,11 @@ type TrackingState = {
   initialized: boolean;
   running: boolean;
   targetVisible: boolean;
+  activeTargetIndex: number;
+  activeMarkerId: string;
+  activeMarkerRole: string;
+  visibleMarkerCount: number;
+  poseSource: MultiMarkerPoseSource | "";
   status: string;
   foundCount: number;
   lostCount: number;
@@ -132,6 +143,16 @@ type TrackingCameraCalibration = {
 type TrackingProviderContext = {
   video: HTMLVideoElement;
   target: ImageTargetSettings;
+};
+
+type MultiMarkerPoseSource = "single-marker" | "fused-markers";
+
+type VisibleMarkerPose = {
+  marker: MarkerSheetMarker;
+  markerMatrix: THREE.Matrix4;
+  sheetMatrix: THREE.Matrix4;
+  updatedAtMs: number;
+  targetDimensions: [number, number];
 };
 
 type TrackingProvider = {
@@ -338,7 +359,14 @@ type RuntimeStatus = {
   mindARInitialized: boolean;
   targetFound: boolean;
   targetLost: boolean;
-  targetIndex: 0;
+  targetIndex: number;
+  trackingSheetId: string;
+  trackingSheetVersion: string;
+  trackingSheetFormat: string;
+  activeMarkerId: string;
+  activeMarkerRole: string;
+  visibleMarkerCount: number;
+  poseSource: MultiMarkerPoseSource | "";
   imageTargetLoaded: boolean;
   imageTargetVersion: string;
   imageTargetSrc: string;
@@ -379,6 +407,7 @@ type RuntimeStatus = {
     aspectRatio: number;
     normalizedHeight: number;
   };
+  lastKnownGoodSheetPoseAgeMs: number;
   runtimeScale: {
     baseFitScale: number;
     displayedScale: number;
@@ -409,6 +438,13 @@ const INITIAL_STATUS: RuntimeStatus = {
   targetFound: false,
   targetLost: false,
   targetIndex: 0,
+  trackingSheetId: "",
+  trackingSheetVersion: "",
+  trackingSheetFormat: "",
+  activeMarkerId: "",
+  activeMarkerRole: "",
+  visibleMarkerCount: 0,
+  poseSource: "",
   imageTargetLoaded: false,
   imageTargetVersion: MASTERPLAN_TARGET_VERSION,
   imageTargetSrc: MASTERPLAN_TARGET_MIND_URL,
@@ -441,6 +477,7 @@ const INITIAL_STATUS: RuntimeStatus = {
   longestDimensionAxisAfterTransforms: "",
   currentCorrectionMode: "NONE",
   targetPhysicalSize: INITIAL_TARGET_SIZE,
+  lastKnownGoodSheetPoseAgeMs: 0,
   runtimeScale: null,
   lastError: ""
 };
@@ -621,6 +658,9 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         activeSceneName: selectedScene?.name || "",
         modelUrl: selectedScene?.modelUrl || "",
         modelPathname: selectedScene?.modelPathname || "",
+        trackingSheetId: result.project.target.markerSheet.sheetId,
+        trackingSheetVersion: result.project.target.markerSheet.version,
+        trackingSheetFormat: result.project.target.markerSheet.format,
         imageTargetVersion: result.project.target.targetVersion,
         imageTargetSrc: result.project.target.mindUrl,
         imageTargetImage: result.project.target.imageUrl,
@@ -697,7 +737,15 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         deviceProfile,
         targetFound: false,
         targetLost: false,
+        targetIndex: 0,
+        activeMarkerId: "",
+        activeMarkerRole: "",
+        visibleMarkerCount: 0,
+        poseSource: "",
         imageTargetLoaded: false,
+        trackingSheetId: target.markerSheet.sheetId,
+        trackingSheetVersion: target.markerSheet.version,
+        trackingSheetFormat: target.markerSheet.format,
         imageTargetVersion: target.targetVersion,
         imageTargetSrc: target.mindUrl,
         imageTargetImage: target.imageUrl,
@@ -727,6 +775,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         boundsAfterCorrection: null,
         longestDimensionAxisAfterTransforms: "",
         runtimeScale: null,
+        lastKnownGoodSheetPoseAgeMs: 0,
         lastError: ""
       });
 
@@ -749,6 +798,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       try {
         await ensureStaticAsset(target.mindUrl, ".mind missing");
         await ensureStaticAsset(target.imageUrl, "target image missing");
+        await ensureStaticAsset(target.markerSheet.manifestUrl, "tracking manifest missing");
         patchRuntimeStatus({ imageTargetLoaded: true });
       } catch (caught) {
         fail(caught instanceof Error ? caught.message : "Image target asset is missing.", "target");
@@ -837,13 +887,30 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         if (stopped) return;
         trackingProvider = providerStartup.provider;
 
-        const unsubscribePose = trackingProvider.onPoseUpdate(({ matrix, timestampMs }) => {
+        const unsubscribePose = trackingProvider.onPoseUpdate(({
+          matrix,
+          timestampMs,
+          targetIndex,
+          markerId,
+          markerRole,
+          visibleMarkerCount,
+          poseSource
+        }) => {
           if (!video) return;
           if (!poseStabilizer.setRawMatrix(matrix, timestampMs)) return;
           targetAnchor.matrix.copy(matrix);
           targetAnchor.visible = true;
           targetAnchor.updateMatrixWorld(true);
           stabilizedRoot.visible = true;
+          patchRuntimeStatus({
+            targetFound: true,
+            targetLost: false,
+            targetIndex,
+            activeMarkerId: markerId,
+            activeMarkerRole: markerRole,
+            visibleMarkerCount,
+            poseSource
+          });
         });
         const unsubscribeFound = trackingProvider.onTargetFound(() => {
           const now = performance.now();
@@ -872,7 +939,12 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
                 ? poseStabilizer.getLossPublicStatus(now, stabilityModeRef.current)
                 : "target lost"
             );
-            patchRuntimeStatus({ targetFound: false, targetLost: true });
+            patchRuntimeStatus({
+              targetFound: false,
+              targetLost: true,
+              visibleMarkerCount: 0,
+              poseSource: ""
+            });
           } else {
             updatePublicStatus("target searching");
           }
@@ -1054,6 +1126,13 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
             if (debugEnabledRef.current) {
               setLiveDebugSnapshot(snapshot);
             }
+            const stabilityDebug = snapshot.stability as Record<string, unknown>;
+            patchRuntimeStatus({
+              lastKnownGoodSheetPoseAgeMs:
+                typeof stabilityDebug.lastKnownGoodPoseAgeMs === "number"
+                  ? stabilityDebug.lastKnownGoodPoseAgeMs
+                  : 0
+            });
             lastDebugSnapshotAtMs = now;
           }
         }
@@ -1323,6 +1402,11 @@ abstract class BaseTrackingProvider implements TrackingProvider {
   protected initialized = false;
   protected running = false;
   protected targetVisible = false;
+  protected activeTargetIndex = 0;
+  protected activeMarkerId = "";
+  protected activeMarkerRole = "";
+  protected visibleMarkerCount = 0;
+  protected poseSource: MultiMarkerPoseSource | "" = "";
   protected foundCount = 0;
   protected lostCount = 0;
   protected lastFoundAtMs = 0;
@@ -1348,6 +1432,11 @@ abstract class BaseTrackingProvider implements TrackingProvider {
       initialized: this.initialized,
       running: this.running,
       targetVisible: this.targetVisible,
+      activeTargetIndex: this.activeTargetIndex,
+      activeMarkerId: this.activeMarkerId,
+      activeMarkerRole: this.activeMarkerRole,
+      visibleMarkerCount: this.visibleMarkerCount,
+      poseSource: this.poseSource,
       status: this.status,
       foundCount: this.foundCount,
       lostCount: this.lostCount,
@@ -1380,8 +1469,13 @@ abstract class BaseTrackingProvider implements TrackingProvider {
     return this.getTrackingState();
   }
 
-  protected emitPose(matrix: THREE.Matrix4, timestampMs: number) {
-    this.poseCallbacks.forEach((callback) => callback({ matrix, timestampMs }));
+  protected emitPose(update: TrackingPoseUpdate) {
+    this.activeTargetIndex = update.targetIndex;
+    this.activeMarkerId = update.markerId;
+    this.activeMarkerRole = update.markerRole;
+    this.visibleMarkerCount = update.visibleMarkerCount;
+    this.poseSource = update.poseSource;
+    this.poseCallbacks.forEach((callback) => callback(update));
   }
 
   protected emitFound(now: number) {
@@ -1402,6 +1496,8 @@ abstract class BaseTrackingProvider implements TrackingProvider {
     }
 
     this.targetVisible = false;
+    this.visibleMarkerCount = 0;
+    this.poseSource = "";
   }
 }
 
@@ -1411,8 +1507,12 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
   private controller: MindARController | null = null;
   private video: HTMLVideoElement | null = null;
   private target: ImageTargetSettings | null = null;
-  private postMatrix = new THREE.Matrix4();
-  private lastTargetDimensions: [number, number] | null = null;
+  private markerByTargetIndex = new Map<number, MarkerSheetMarker>();
+  private postMatrixByTargetIndex = new Map<number, THREE.Matrix4>();
+  private markerLocalSheetMatrixByTargetIndex = new Map<number, THREE.Matrix4>();
+  private visibleMarkerPoses = new Map<number, VisibleMarkerPose>();
+  private lastTargetDimensions: Array<[number, number]> = [];
+  private lastSheetPoseDebug: Record<string, unknown> | null = null;
 
   async isSupported(): Promise<TrackingProviderSupport> {
     return DEFAULT_TRACKING_SUPPORT["mindar-image"];
@@ -1428,7 +1528,7 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
     this.controller = new ControllerClass({
       inputWidth: video.videoWidth,
       inputHeight: video.videoHeight,
-      maxTrack: 1,
+      maxTrack: Math.max(1, Math.min(target.markerSheet.maxTrack, target.markerSheet.markers.length)),
       warmupTolerance: 3,
       missTolerance: 8,
       filterMinCF: null,
@@ -1438,10 +1538,25 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
 
     this.status = "loading image target";
     const { dimensions } = await this.controller.addImageTargets(target.mindUrl);
-    const [targetWidth, targetHeight] =
-      dimensions[0] || [1, getImageTargetGeometry(target).normalizedHeight];
-    this.lastTargetDimensions = [targetWidth, targetHeight];
-    this.postMatrix.copy(createPostMatrix(targetWidth, targetHeight));
+    this.lastTargetDimensions = dimensions;
+    this.markerByTargetIndex.clear();
+    this.postMatrixByTargetIndex.clear();
+    this.markerLocalSheetMatrixByTargetIndex.clear();
+    this.visibleMarkerPoses.clear();
+
+    const markerFallbackDimensions: [number, number] = [1, 1];
+    for (const marker of target.markerSheet.markers) {
+      const targetDimensions = dimensions[marker.targetIndex] || markerFallbackDimensions;
+      this.markerByTargetIndex.set(marker.targetIndex, marker);
+      this.postMatrixByTargetIndex.set(
+        marker.targetIndex,
+        createPostMatrix(targetDimensions[0], targetDimensions[1])
+      );
+      this.markerLocalSheetMatrixByTargetIndex.set(
+        marker.targetIndex,
+        createMarkerLocalSheetMatrix(marker, target)
+      );
+    }
 
     this.status = "warming up";
     await this.controller.dummyRun(video);
@@ -1470,8 +1585,14 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
     this.controller = null;
     this.video = null;
     this.target = null;
+    this.markerByTargetIndex.clear();
+    this.postMatrixByTargetIndex.clear();
+    this.markerLocalSheetMatrixByTargetIndex.clear();
+    this.visibleMarkerPoses.clear();
     this.initialized = false;
     this.targetVisible = false;
+    this.visibleMarkerCount = 0;
+    this.poseSource = "";
     this.status = "disposed";
   }
 
@@ -1494,33 +1615,132 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
       inputHeight: this.controller?.inputHeight || 0,
       targetMindUrl: this.target?.mindUrl || "",
       targetImageUrl: this.target?.imageUrl || "",
+      trackingSheet: this.target
+        ? {
+            sheetId: this.target.markerSheet.sheetId,
+            version: this.target.markerSheet.version,
+            format: this.target.markerSheet.format,
+            markerCount: this.target.markerSheet.markers.length,
+            maxTrack: this.target.markerSheet.maxTrack,
+            manifestUrl: this.target.markerSheet.manifestUrl
+          }
+        : null,
+      activeMarker: this.activeMarkerId
+        ? {
+            id: this.activeMarkerId,
+            role: this.activeMarkerRole,
+            targetIndex: this.activeTargetIndex
+          }
+        : null,
+      visibleMarkerCount: this.visibleMarkerCount,
+      poseSource: this.poseSource,
+      lastSheetPose: this.lastSheetPoseDebug,
       targetPixelSize: this.target ? targetPixelSizeDebug(this.target) : null,
       targetPhysicalSize: this.target ? targetSizeDebug(this.target) : null,
-      targetDimensions: this.lastTargetDimensions
-        ? {
-            width: roundForDebug(this.lastTargetDimensions[0]),
-            height: roundForDebug(this.lastTargetDimensions[1])
-          }
-        : null
+      targetDimensions: this.lastTargetDimensions.map(([width, height], targetIndex) => ({
+        targetIndex,
+        width: roundForDebug(width),
+        height: roundForDebug(height)
+      }))
     };
   }
 
   private handleUpdate(data: MindARUpdate) {
-    if (data.type !== "updateMatrix" || data.targetIndex !== 0) return;
+    if (data.type !== "updateMatrix" || typeof data.targetIndex !== "number") return;
+    const marker = this.markerByTargetIndex.get(data.targetIndex);
+    const postMatrix = this.postMatrixByTargetIndex.get(data.targetIndex);
+    const markerLocalSheetMatrix = this.markerLocalSheetMatrixByTargetIndex.get(data.targetIndex);
+    if (!marker || !postMatrix || !markerLocalSheetMatrix) return;
     const now = performance.now();
 
     if (data.worldMatrix) {
-      const matrix = new THREE.Matrix4();
-      matrix.fromArray(data.worldMatrix);
-      matrix.multiply(this.postMatrix);
-      if (!isUsableMatrix(matrix)) return;
+      const markerMatrix = new THREE.Matrix4();
+      markerMatrix.fromArray(data.worldMatrix);
+      markerMatrix.multiply(postMatrix);
+      if (!isUsableMatrix(markerMatrix)) return;
+
+      const sheetMatrix = markerMatrix.clone().multiply(
+        markerLocalSheetMatrix.clone().invert()
+      );
+      if (!isUsableMatrix(sheetMatrix)) return;
+
+      const targetDimensions =
+        this.lastTargetDimensions[data.targetIndex] ||
+        ([1, 1] as [number, number]);
+      this.visibleMarkerPoses.set(data.targetIndex, {
+        marker,
+        markerMatrix,
+        sheetMatrix,
+        updatedAtMs: now,
+        targetDimensions
+      });
+      this.pruneStaleMarkerPoses(now);
+
+      const fusedPose = this.computeSheetPose(now);
+      if (!fusedPose) return;
 
       this.emitFound(now);
-      this.emitPose(matrix, now);
+      this.lastSheetPoseDebug = {
+        activeMarkerId: fusedPose.marker.id,
+        activeTargetIndex: fusedPose.marker.targetIndex,
+        activeMarkerRole: fusedPose.marker.role,
+        visibleMarkerCount: fusedPose.visibleMarkerCount,
+        poseSource: fusedPose.poseSource,
+        markerSheetPosition: markerSheetPositionDebug(fusedPose.marker, this.target),
+        sheetTransform: transformDebugFromMatrix(fusedPose.sheetMatrix)
+      };
+      this.emitPose({
+        matrix: fusedPose.sheetMatrix,
+        timestampMs: now,
+        targetIndex: fusedPose.marker.targetIndex,
+        markerId: fusedPose.marker.id,
+        markerRole: fusedPose.marker.role,
+        visibleMarkerCount: fusedPose.visibleMarkerCount,
+        poseSource: fusedPose.poseSource
+      });
       return;
     }
 
-    this.emitLost(now);
+    this.visibleMarkerPoses.delete(data.targetIndex);
+    this.pruneStaleMarkerPoses(now);
+    this.visibleMarkerCount = this.visibleMarkerPoses.size;
+    if (this.visibleMarkerPoses.size === 0) {
+      this.emitLost(now);
+    }
+  }
+
+  private pruneStaleMarkerPoses(now: number) {
+    const staleAfterMs = 350;
+    for (const [targetIndex, pose] of this.visibleMarkerPoses) {
+      if (now - pose.updatedAtMs > staleAfterMs) {
+        this.visibleMarkerPoses.delete(targetIndex);
+      }
+    }
+  }
+
+  private computeSheetPose(now: number) {
+    this.pruneStaleMarkerPoses(now);
+    const poses = [...this.visibleMarkerPoses.values()]
+      .sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+    if (poses.length === 0) return null;
+
+    const freshest = poses[0];
+    if (poses.length === 1) {
+      return {
+        sheetMatrix: freshest.sheetMatrix.clone(),
+        marker: freshest.marker,
+        visibleMarkerCount: 1,
+        poseSource: "single-marker" as const
+      };
+    }
+
+    const fused = fuseSheetMatrices(poses.map((pose) => pose.sheetMatrix));
+    return {
+      sheetMatrix: fused,
+      marker: freshest.marker,
+      visibleMarkerCount: poses.length,
+      poseSource: "fused-markers" as const
+    };
   }
 }
 
@@ -2583,6 +2803,84 @@ function createPostMatrix(targetWidth: number, targetHeight: number) {
   return matrix;
 }
 
+function createMarkerLocalSheetMatrix(marker: MarkerSheetMarker, target: ImageTargetSettings) {
+  const sheetAspect = target.heightMm / target.widthMm;
+  const markerCenterX = marker.x + marker.width / 2;
+  const markerCenterY = marker.y + marker.height / 2;
+  const position = new THREE.Vector3(
+    markerCenterX - 0.5,
+    (0.5 - markerCenterY) * sheetAspect,
+    0
+  );
+  const quaternion = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 0, 1),
+    THREE.MathUtils.degToRad(marker.rotationDeg)
+  );
+  const markerScaleBySheetWidth = marker.widthMm / target.widthMm;
+  const scale = new THREE.Vector3(
+    markerScaleBySheetWidth,
+    markerScaleBySheetWidth,
+    markerScaleBySheetWidth
+  );
+  return new THREE.Matrix4().compose(position, quaternion, scale);
+}
+
+function fuseSheetMatrices(matrices: THREE.Matrix4[]) {
+  const position = new THREE.Vector3();
+  const scale = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  const currentPosition = new THREE.Vector3();
+  const currentScale = new THREE.Vector3();
+  const currentQuaternion = new THREE.Quaternion();
+
+  matrices.forEach((matrix, index) => {
+    matrix.decompose(currentPosition, currentQuaternion, currentScale);
+    if (index === 0) {
+      position.copy(currentPosition);
+      quaternion.copy(currentQuaternion).normalize();
+      scale.copy(currentScale);
+      return;
+    }
+
+    const weight = 1 / (index + 1);
+    position.lerp(currentPosition, weight);
+    if (quaternion.dot(currentQuaternion) < 0) {
+      currentQuaternion.set(
+        -currentQuaternion.x,
+        -currentQuaternion.y,
+        -currentQuaternion.z,
+        -currentQuaternion.w
+      );
+    }
+    quaternion.slerp(currentQuaternion, weight).normalize();
+    scale.lerp(currentScale, weight);
+  });
+
+  return new THREE.Matrix4().compose(position, quaternion, scale);
+}
+
+function markerSheetPositionDebug(marker: MarkerSheetMarker, target: ImageTargetSettings | null) {
+  const sheetWidthMm = target?.widthMm || 1;
+  const sheetHeightMm = target?.heightMm || 1;
+  const centerX = marker.x + marker.width / 2;
+  const centerY = marker.y + marker.height / 2;
+
+  return {
+    normalizedTopLeft: {
+      x: roundForDebug(marker.x),
+      y: roundForDebug(marker.y),
+      width: roundForDebug(marker.width),
+      height: roundForDebug(marker.height)
+    },
+    centerMmFromSheetCenter: {
+      x: roundForDebug((centerX - 0.5) * sheetWidthMm),
+      y: roundForDebug((0.5 - centerY) * sheetHeightMm),
+      z: 0
+    },
+    rotationDeg: marker.rotationDeg
+  };
+}
+
 function resizeTrackingView({
   video,
   renderer,
@@ -2723,7 +3021,26 @@ function targetDebug(target: ImageTargetSettings) {
     previewUrl: target.previewUrl,
     mindUrl: target.mindUrl,
     pixelSize: targetPixelSizeDebug(target),
-    physicalSize: targetSizeDebug(target)
+    physicalSize: targetSizeDebug(target),
+    markerSheet: {
+      sheetId: target.markerSheet.sheetId,
+      version: target.markerSheet.version,
+      format: target.markerSheet.format,
+      orientation: target.markerSheet.orientation,
+      maxTrack: target.markerSheet.maxTrack,
+      manifestUrl: target.markerSheet.manifestUrl,
+      markerCount: target.markerSheet.markers.length,
+      markers: target.markerSheet.markers.map((marker) => ({
+        id: marker.id,
+        targetIndex: marker.targetIndex,
+        role: marker.role,
+        x: roundForDebug(marker.x),
+        y: roundForDebug(marker.y),
+        width: roundForDebug(marker.width),
+        height: roundForDebug(marker.height),
+        rotationDeg: marker.rotationDeg
+      }))
+    }
   };
 }
 
@@ -2816,6 +3133,7 @@ function buildLiveDebugSnapshot({
   const frameDebug = frameRateTracker.debug();
   const modelStats = collectModelPerformanceStats(activeModel);
   const viewport = viewportDebug();
+  const providerState = trackingProvider?.getTrackingState() || null;
 
   return {
     sampledAt: new Date().toISOString(),
@@ -2828,6 +3146,24 @@ function buildLiveDebugSnapshot({
     providerSupportStatus: trackingSupport,
     providerDebugState: trackingProvider?.getDebugState() || null,
     mindARStatus: trackingProvider?.id === "mindar-image" ? trackingProvider.getDebugState() : null,
+    multiMarkerModeActive: target.markerSheet.markers.length > 1,
+    activeSheet: {
+      sheetId: target.markerSheet.sheetId,
+      version: target.markerSheet.version,
+      format: target.markerSheet.format,
+      orientation: target.markerSheet.orientation,
+      markerCount: target.markerSheet.markers.length,
+      manifestUrl: target.markerSheet.manifestUrl
+    },
+    activeMarker: providerState
+      ? {
+          id: providerState.activeMarkerId,
+          role: providerState.activeMarkerRole,
+          targetIndex: providerState.activeTargetIndex,
+          visibleMarkerCount: providerState.visibleMarkerCount,
+          poseSource: providerState.poseSource
+        }
+      : null,
     webXRSupportCheck: trackingSupport["webxr-world"],
     deviceProfile,
     stabilityMode: stabilityConfig.label,

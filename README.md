@@ -18,17 +18,19 @@ Run locally:
 npm run dev
 ```
 
-## Image Target
+## A0 multi-marker target
 
-The app tracks one static MindAR image target:
+The app now uses one active A0 multi-marker tracking sheet:
 
-- `public/targets/masterplan.mind`
-- `public/targets/masterplan-preview.jpg`
+- `public/tracking-sheets/marker-sheet-a0-v1/tracking-sheet-manifest.json`
+- `public/tracking-sheets/marker-sheet-a0-v1/marker-sheet-a0-v1.mind`
+- `public/tracking-sheets/marker-sheet-a0-v1/layout-preview-a0.png`
+- `public/tracking-sheets/marker-sheet-a0-v1/markers/*.png`
 - `public/vendor/mind-ar/` browser runtime files
 
-The `.mind` file is generated locally from the optimized masterplan source and committed. Do not generate it during Vercel builds.
+The `.mind` file is compiled locally from the eight ordered marker PNGs and committed. Do not generate it during Vercel builds.
 
-Print or display the masterplan image flat. Keep the whole image visible, avoid glare, and move the phone until the image fills a useful part of the camera view.
+Print or display the A0 sheet flat. The full sheet is not one image target: each local marker is an individual MindAR target. Detecting any one marker reconstructs the global sheet pose; if more than one marker is visible, the runtime can use a simple fused pose.
 
 ## Vercel environment variables
 
