@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { applyMindARBoardSpaceRoot } from "@/lib/coordinates";
 import {
@@ -51,6 +51,65 @@ type MindARImageRuntime = {
 };
 
 const MINDAR_IMAGE_RUNTIME_URL = "/vendor/mind-ar/mindar-image.prod.js";
+const AR_STABILITY_STORAGE_KEY = "qrcode-ar:stability-mode";
+
+type ARStabilityMode = "realtime" | "balanced" | "stable";
+
+type ARStabilityConfig = {
+  label: string;
+  positionDeadzoneM: number;
+  rotationDeadzoneRad: number;
+  scaleDeadzone: number;
+  minAlphaAt60Fps: number;
+  maxAlphaAt60Fps: number;
+  positionCatchupM: number;
+  rotationCatchupRad: number;
+  scaleCatchup: number;
+  pixelRatioMax: number;
+};
+
+const DEFAULT_STABILITY_MODE: ARStabilityMode = "balanced";
+
+const AR_STABILITY_MODES: ARStabilityMode[] = ["realtime", "balanced", "stable"];
+
+const AR_STABILITY_CONFIGS: Record<ARStabilityMode, ARStabilityConfig> = {
+  realtime: {
+    label: "Realtime",
+    positionDeadzoneM: 0.0003,
+    rotationDeadzoneRad: THREE.MathUtils.degToRad(0.08),
+    scaleDeadzone: 0.0006,
+    minAlphaAt60Fps: 0.65,
+    maxAlphaAt60Fps: 0.98,
+    positionCatchupM: 0.025,
+    rotationCatchupRad: THREE.MathUtils.degToRad(5),
+    scaleCatchup: 0.02,
+    pixelRatioMax: 2
+  },
+  balanced: {
+    label: "Balanced",
+    positionDeadzoneM: 0.0012,
+    rotationDeadzoneRad: THREE.MathUtils.degToRad(0.25),
+    scaleDeadzone: 0.0015,
+    minAlphaAt60Fps: 0.18,
+    maxAlphaAt60Fps: 0.76,
+    positionCatchupM: 0.035,
+    rotationCatchupRad: THREE.MathUtils.degToRad(7),
+    scaleCatchup: 0.03,
+    pixelRatioMax: 2
+  },
+  stable: {
+    label: "Stable",
+    positionDeadzoneM: 0.0025,
+    rotationDeadzoneRad: THREE.MathUtils.degToRad(0.55),
+    scaleDeadzone: 0.0025,
+    minAlphaAt60Fps: 0.08,
+    maxAlphaAt60Fps: 0.55,
+    positionCatchupM: 0.05,
+    rotationCatchupRad: THREE.MathUtils.degToRad(10),
+    scaleCatchup: 0.04,
+    pixelRatioMax: 1.5
+  }
+};
 
 type PublicStatus =
   | "camera loading"
@@ -187,16 +246,53 @@ const INVISIBLE_MATRIX = new THREE.Matrix4().set(
 export function ARClient({ id, debug = false }: { id: string; debug?: boolean }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const liveDebugRef = useRef<Record<string, unknown>>({});
+  const debugEnabledRef = useRef(debug);
+  const [stabilityMode, setStabilityMode] = useState<ARStabilityMode>(readInitialStabilityMode);
+  const stabilityModeRef = useRef<ARStabilityMode>(stabilityMode);
   const [project, setProject] = useState<ProjectMetadata | null>(null);
   const [publicStatus, setPublicStatus] = useState<PublicStatus>("camera loading");
   const [runtimeResetKey, setRuntimeResetKey] = useState(0);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>(INITIAL_STATUS);
+  const [liveDebugSnapshot, setLiveDebugSnapshot] = useState<Record<string, unknown>>({});
   const [debugCopyStatus, setDebugCopyStatus] = useState("");
 
   const patchRuntimeStatus = useCallback((next: Partial<RuntimeStatus>) => {
     setRuntimeStatus((current) => ({ ...current, ...next }));
   }, []);
+
+  const applyStabilityMode = useCallback((nextMode: ARStabilityMode, persist: boolean) => {
+    stabilityModeRef.current = nextMode;
+    setStabilityMode(nextMode);
+
+    if (persist) {
+      try {
+        window.localStorage.setItem(AR_STABILITY_STORAGE_KEY, nextMode);
+      } catch {
+        // The selected mode still applies for this page even if storage is unavailable.
+      }
+    }
+
+    if (rendererRef.current) {
+      applyRendererPixelRatio(rendererRef.current, nextMode);
+    }
+
+    liveDebugRef.current = {
+      ...liveDebugRef.current,
+      stabilityMode: nextMode,
+      stabilityModeLabel: getStabilityConfig(nextMode).label
+    };
+  }, []);
+
+  useEffect(() => {
+    debugEnabledRef.current = debug;
+  }, [debug]);
+
+  const handleStabilityModeChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const nextMode = parseStabilityMode(event.target.value) || DEFAULT_STABILITY_MODE;
+    applyStabilityMode(nextMode, true);
+  }, [applyStabilityMode]);
 
   const copyDebugReport = useCallback(async () => {
     const report = {
@@ -204,6 +300,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       pageUrl: window.location.href,
       userAgent: navigator.userAgent,
       viewport: viewportDebug(),
+      stabilityMode,
+      stabilityModeLabel: getStabilityConfig(stabilityMode).label,
       publicStatus,
       activeProjectId: project?.id || id,
       savedStatus: runtimeStatus,
@@ -218,7 +316,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     }
 
     window.setTimeout(() => setDebugCopyStatus(""), 2200);
-  }, [id, project, publicStatus, runtimeStatus]);
+  }, [id, project, publicStatus, runtimeStatus, stabilityMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -375,8 +473,9 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         const ControllerClass = mindarModule.Controller;
 
         renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+        rendererRef.current = renderer;
         renderer.getContext();
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        applyRendererPixelRatio(renderer, stabilityModeRef.current);
         renderer.outputColorSpace = THREE.SRGBColorSpace;
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
         renderer.toneMappingExposure = 1.2;
@@ -401,19 +500,24 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         targetAnchor.visible = false;
         threeScene.add(targetAnchor);
 
-        targetAnchor.add(new THREE.AmbientLight(0xffffff, 2));
+        const stabilizedRoot = new THREE.Group();
+        stabilizedRoot.matrixAutoUpdate = false;
+        stabilizedRoot.visible = false;
+        targetAnchor.add(stabilizedRoot);
+
+        stabilizedRoot.add(new THREE.AmbientLight(0xffffff, 2));
         const hemisphere = new THREE.HemisphereLight(0xffffff, 0xd7dee8, 3);
-        targetAnchor.add(hemisphere);
+        stabilizedRoot.add(hemisphere);
         const directional = new THREE.DirectionalLight(0xffffff, 3);
         directional.position.set(0.6, 1.4, 0.8);
-        targetAnchor.add(directional);
+        stabilizedRoot.add(directional);
 
         const boardReferenceGroup = new THREE.Group();
         const desktopViewportTransformGroup = new THREE.Group();
         const modelCorrectionGroup = new THREE.Group();
         const scaleRoot = new THREE.Group();
         applyMindARBoardSpaceRoot(boardReferenceGroup, getImageTargetGeometry(target).widthM);
-        targetAnchor.add(boardReferenceGroup);
+        stabilizedRoot.add(boardReferenceGroup);
         boardReferenceGroup.add(desktopViewportTransformGroup);
 
         const debugCube = createDebugCube();
@@ -421,6 +525,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
 
         const targetAxes = new THREE.AxesHelper(0.18);
         boardReferenceGroup.add(targetAxes);
+
+        const poseStabilizer = new PoseStabilizer();
+        const frameRateTracker = new FrameRateTracker();
+        let lastDebugSnapshotAtMs = 0;
 
         controller = new ControllerClass({
           inputWidth: video.videoWidth,
@@ -438,9 +546,11 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
               const matrix = new THREE.Matrix4();
               matrix.fromArray(data.worldMatrix);
               matrix.multiply(postMatrix);
+              if (!poseStabilizer.setRawMatrix(matrix, performance.now())) return;
               targetAnchor.matrix.copy(matrix);
               targetAnchor.visible = true;
               targetAnchor.updateMatrixWorld(true);
+              stabilizedRoot.visible = true;
 
               if (!targetVisible) {
                 targetVisible = true;
@@ -448,8 +558,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
                 patchRuntimeStatus({ targetFound: true, targetLost: false });
               }
             } else {
+              poseStabilizer.markTargetLost(performance.now());
               targetAnchor.matrix.copy(INVISIBLE_MATRIX);
               targetAnchor.visible = false;
+              stabilizedRoot.visible = false;
 
               if (targetVisible) {
                 targetVisible = false;
@@ -459,18 +571,6 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
                 setPublicStatus("target searching");
               }
             }
-
-            liveDebugRef.current = buildLiveDebugSnapshot({
-              video,
-              targetAnchor,
-              boardReferenceGroup,
-              desktopViewportTransformGroup,
-              modelCorrectionGroup,
-              scaleRoot,
-              activeModel,
-              activeCorrectionMetrics,
-              targetVisible
-            });
           }
         });
 
@@ -587,10 +687,42 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           }
         }
 
-        function animate() {
+        function animate(now = performance.now()) {
           if (stopped || !renderer) return;
           animationFrame = window.requestAnimationFrame(animate);
+          frameRateTracker.tick(now);
+          poseStabilizer.applyToRoot({
+            targetAnchor,
+            stabilizedRoot,
+            mode: stabilityModeRef.current,
+            now
+          });
           renderer.render(threeScene, camera);
+
+          if (video && now - lastDebugSnapshotAtMs >= 250) {
+            const snapshot = buildLiveDebugSnapshot({
+              video,
+              renderer,
+              targetAnchor,
+              stabilizedRoot,
+              boardReferenceGroup,
+              desktopViewportTransformGroup,
+              modelCorrectionGroup,
+              scaleRoot,
+              activeModel,
+              activeCorrectionMetrics,
+              targetVisible,
+              stabilityMode: stabilityModeRef.current,
+              poseStabilizer,
+              frameRateTracker,
+              now
+            });
+            liveDebugRef.current = snapshot;
+            if (debugEnabledRef.current) {
+              setLiveDebugSnapshot(snapshot);
+            }
+            lastDebugSnapshotAtMs = now;
+          }
         }
 
         cleanupRef.current = () => {
@@ -603,6 +735,9 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           video?.remove();
           disposeObject(targetAnchor);
           renderer?.dispose();
+          if (rendererRef.current === renderer) {
+            rendererRef.current = null;
+          }
           renderer?.domElement.remove();
         };
 
@@ -662,7 +797,22 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         <p className="inline-block rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] backdrop-blur">
           {publicStatus}
         </p>
-        <div className="pointer-events-auto flex items-center gap-2">
+        <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
+          <label className="flex items-center gap-1.5 rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold backdrop-blur">
+            <span>Stability:</span>
+            <select
+              aria-label="AR stability mode"
+              className="rounded bg-white px-1.5 py-1 text-xs font-semibold text-black"
+              value={stabilityMode}
+              onChange={handleStabilityModeChange}
+            >
+              {AR_STABILITY_MODES.map((mode) => (
+                <option key={mode} value={mode}>
+                  {getStabilityConfig(mode).label}
+                </option>
+              ))}
+            </select>
+          </label>
           {debugCopyStatus ? (
             <span className="rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold backdrop-blur">
               {debugCopyStatus}
@@ -708,7 +858,17 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
             </button>
           </div>
           <pre className="max-w-3xl overflow-auto rounded bg-black/70 p-3 text-xs leading-5 text-[var(--soft)]">
-            {JSON.stringify(runtimeStatus, null, 2)}
+            {JSON.stringify(
+              {
+                stabilityMode: getStabilityConfig(stabilityMode).label,
+                stabilityModeKey: stabilityMode,
+                publicStatus,
+                savedStatus: runtimeStatus,
+                live: liveDebugSnapshot
+              },
+              null,
+              2
+            )}
           </pre>
         </div>
       ) : null}
@@ -782,6 +942,332 @@ async function ensureStaticAsset(url: string, label: string) {
 async function loadMindARImageRuntime() {
   const moduleUrl = new URL(MINDAR_IMAGE_RUNTIME_URL, window.location.href).href;
   return (await import(/* webpackIgnore: true */ moduleUrl)) as MindARImageRuntime;
+}
+
+function parseStabilityMode(value: string | null): ARStabilityMode | null {
+  if (!value) return null;
+  return AR_STABILITY_MODES.includes(value as ARStabilityMode)
+    ? (value as ARStabilityMode)
+    : null;
+}
+
+function readInitialStabilityMode(): ARStabilityMode {
+  if (typeof window === "undefined") return DEFAULT_STABILITY_MODE;
+
+  try {
+    return parseStabilityMode(window.localStorage.getItem(AR_STABILITY_STORAGE_KEY)) || DEFAULT_STABILITY_MODE;
+  } catch {
+    return DEFAULT_STABILITY_MODE;
+  }
+}
+
+function getStabilityConfig(mode: ARStabilityMode) {
+  return AR_STABILITY_CONFIGS[mode] || AR_STABILITY_CONFIGS[DEFAULT_STABILITY_MODE];
+}
+
+function applyRendererPixelRatio(renderer: THREE.WebGLRenderer, mode: ARStabilityMode) {
+  const config = getStabilityConfig(mode);
+  const deviceRatio = Number.isFinite(window.devicePixelRatio) ? window.devicePixelRatio : 1;
+  const pixelRatio = Math.max(1, Math.min(deviceRatio, config.pixelRatioMax));
+  renderer.setPixelRatio(pixelRatio);
+  return pixelRatio;
+}
+
+class FrameRateTracker {
+  private lastFrameAtMs = 0;
+  private frameTimeEstimateMs = 0;
+  private fpsEstimate = 0;
+
+  tick(now: number) {
+    if (!this.lastFrameAtMs) {
+      this.lastFrameAtMs = now;
+      return;
+    }
+
+    const frameTimeMs = THREE.MathUtils.clamp(now - this.lastFrameAtMs, 1, 1000);
+    this.lastFrameAtMs = now;
+    this.frameTimeEstimateMs = this.frameTimeEstimateMs
+      ? THREE.MathUtils.lerp(this.frameTimeEstimateMs, frameTimeMs, 0.12)
+      : frameTimeMs;
+    this.fpsEstimate = this.frameTimeEstimateMs > 0 ? 1000 / this.frameTimeEstimateMs : 0;
+  }
+
+  debug() {
+    return {
+      fpsEstimate: roundForDebug(this.fpsEstimate),
+      frameTimeEstimateMs: roundForDebug(this.frameTimeEstimateMs)
+    };
+  }
+}
+
+class PoseStabilizer {
+  private rawMatrix = new THREE.Matrix4();
+  private smoothedMatrix = new THREE.Matrix4();
+  private stabilizedLocalMatrix = new THREE.Matrix4();
+  private rawWorldInverse = new THREE.Matrix4();
+  private rawPosition = new THREE.Vector3();
+  private rawQuaternion = new THREE.Quaternion();
+  private rawScale = new THREE.Vector3(1, 1, 1);
+  private smoothedPosition = new THREE.Vector3();
+  private smoothedQuaternion = new THREE.Quaternion();
+  private smoothedScale = new THREE.Vector3(1, 1, 1);
+  private targetVisible = false;
+  private hasRawPose = false;
+  private hasSmoothedPose = false;
+  private lastUpdateAtMs = 0;
+  private lastRawAtMs = 0;
+  private lastFoundAtMs = 0;
+  private lastLostAtMs = 0;
+  private targetFoundEvents = 0;
+  private targetLostEvents = 0;
+  private positionJitterDeltaM = 0;
+  private rotationJitterDeltaRad = 0;
+  private scaleJitterDelta = 0;
+  private rawToSmoothedPositionDeltaM = 0;
+  private rawToSmoothedRotationDeltaRad = 0;
+  private rawToSmoothedScaleDelta = 0;
+  private smoothingAlpha = 0;
+  private positionAlpha = 0;
+  private rotationAlpha = 0;
+  private scaleAlpha = 0;
+
+  setRawMatrix(matrix: THREE.Matrix4, now: number) {
+    if (!isUsableMatrix(matrix)) return false;
+
+    const nextPosition = new THREE.Vector3();
+    const nextQuaternion = new THREE.Quaternion();
+    const nextScale = new THREE.Vector3();
+    matrix.decompose(nextPosition, nextQuaternion, nextScale);
+
+    if (!isFiniteVector(nextPosition) || !isFiniteQuaternion(nextQuaternion) || !isFiniteVector(nextScale)) {
+      return false;
+    }
+
+    if (this.hasRawPose) {
+      this.positionJitterDeltaM = this.rawPosition.distanceTo(nextPosition);
+      this.rotationJitterDeltaRad = this.rawQuaternion.angleTo(nextQuaternion);
+      this.scaleJitterDelta = scaleDelta(this.rawScale, nextScale);
+    } else {
+      this.positionJitterDeltaM = 0;
+      this.rotationJitterDeltaRad = 0;
+      this.scaleJitterDelta = 0;
+    }
+
+    if (!this.targetVisible) {
+      this.targetFoundEvents += 1;
+      this.lastFoundAtMs = now;
+      this.hasSmoothedPose = false;
+      this.lastUpdateAtMs = 0;
+    }
+
+    this.targetVisible = true;
+    this.hasRawPose = true;
+    this.lastRawAtMs = now;
+    this.rawMatrix.copy(matrix);
+    this.rawPosition.copy(nextPosition);
+    this.rawQuaternion.copy(nextQuaternion);
+    this.rawScale.copy(nextScale);
+
+    if (!this.hasSmoothedPose) {
+      this.smoothedPosition.copy(this.rawPosition);
+      this.smoothedQuaternion.copy(this.rawQuaternion);
+      this.smoothedScale.copy(this.rawScale);
+      this.smoothedMatrix.copy(this.rawMatrix);
+      this.hasSmoothedPose = true;
+      this.smoothingAlpha = 1;
+      this.positionAlpha = 1;
+      this.rotationAlpha = 1;
+      this.scaleAlpha = 1;
+      this.updateRawToSmoothedDeltas();
+    }
+
+    return true;
+  }
+
+  markTargetLost(now: number) {
+    if (this.targetVisible) {
+      this.targetLostEvents += 1;
+      this.lastLostAtMs = now;
+    }
+
+    this.targetVisible = false;
+    this.hasSmoothedPose = false;
+    this.lastUpdateAtMs = 0;
+    this.smoothingAlpha = 0;
+    this.positionAlpha = 0;
+    this.rotationAlpha = 0;
+    this.scaleAlpha = 0;
+  }
+
+  applyToRoot({
+    targetAnchor,
+    stabilizedRoot,
+    mode,
+    now
+  }: {
+    targetAnchor: THREE.Group;
+    stabilizedRoot: THREE.Group;
+    mode: ARStabilityMode;
+    now: number;
+  }) {
+    if (!this.targetVisible || !this.hasRawPose || !this.hasSmoothedPose) {
+      stabilizedRoot.visible = false;
+      return;
+    }
+
+    const config = getStabilityConfig(mode);
+    const dtMs = this.lastUpdateAtMs
+      ? THREE.MathUtils.clamp(now - this.lastUpdateAtMs, 1, 80)
+      : 1000 / 60;
+    this.lastUpdateAtMs = now;
+    this.updateRawToSmoothedDeltas();
+
+    const alphaAt60Fps = this.adaptiveAlphaAt60Fps(config);
+    const frameScale = dtMs / (1000 / 60);
+    const frameAlpha = 1 - Math.pow(1 - alphaAt60Fps, frameScale);
+    this.smoothingAlpha = THREE.MathUtils.clamp(frameAlpha, 0, 1);
+
+    if (this.rawToSmoothedPositionDeltaM > config.positionDeadzoneM) {
+      this.smoothedPosition.lerp(this.rawPosition, this.smoothingAlpha);
+      this.positionAlpha = this.smoothingAlpha;
+    } else {
+      this.positionAlpha = 0;
+    }
+
+    if (this.rawToSmoothedRotationDeltaRad > config.rotationDeadzoneRad) {
+      this.smoothedQuaternion.slerp(this.rawQuaternion, this.smoothingAlpha);
+      this.smoothedQuaternion.normalize();
+      this.rotationAlpha = this.smoothingAlpha;
+    } else {
+      this.rotationAlpha = 0;
+    }
+
+    if (this.rawToSmoothedScaleDelta > config.scaleDeadzone) {
+      this.smoothedScale.lerp(this.rawScale, this.smoothingAlpha);
+      this.scaleAlpha = this.smoothingAlpha;
+    } else {
+      this.scaleAlpha = 0;
+    }
+
+    this.smoothedMatrix.compose(
+      this.smoothedPosition,
+      this.smoothedQuaternion,
+      this.smoothedScale
+    );
+    this.updateRawToSmoothedDeltas();
+
+    targetAnchor.updateMatrixWorld(true);
+    this.rawWorldInverse.copy(targetAnchor.matrixWorld).invert();
+    this.stabilizedLocalMatrix.copy(this.rawWorldInverse).multiply(this.smoothedMatrix);
+
+    if (!isUsableMatrix(this.stabilizedLocalMatrix)) {
+      stabilizedRoot.visible = false;
+      return;
+    }
+
+    stabilizedRoot.matrix.copy(this.stabilizedLocalMatrix);
+    stabilizedRoot.matrixWorldNeedsUpdate = true;
+    stabilizedRoot.visible = true;
+    stabilizedRoot.updateMatrixWorld(true);
+  }
+
+  debug(now: number, mode: ARStabilityMode) {
+    const config = getStabilityConfig(mode);
+
+    return {
+      currentStabilityMode: config.label,
+      currentStabilityModeKey: mode,
+      targetVisible: this.targetVisible,
+      hasRawPose: this.hasRawPose,
+      rawTargetPose: this.hasRawPose ? transformDebugFromMatrix(this.rawMatrix) : null,
+      smoothedTargetPose: this.hasSmoothedPose
+        ? transformDebugFromParts(this.smoothedPosition, this.smoothedQuaternion, this.smoothedScale)
+        : null,
+      positionJitterDeltaM: roundForDebug(this.positionJitterDeltaM),
+      rotationJitterDeltaDeg: roundForDebug(THREE.MathUtils.radToDeg(this.rotationJitterDeltaRad)),
+      scaleJitterDelta: roundForDebug(this.scaleJitterDelta),
+      rawToSmoothedPositionDeltaM: roundForDebug(this.rawToSmoothedPositionDeltaM),
+      rawToSmoothedRotationDeltaDeg: roundForDebug(
+        THREE.MathUtils.radToDeg(this.rawToSmoothedRotationDeltaRad)
+      ),
+      rawToSmoothedScaleDelta: roundForDebug(this.rawToSmoothedScaleDelta),
+      smoothingAlpha: roundForDebug(this.smoothingAlpha),
+      positionAlpha: roundForDebug(this.positionAlpha),
+      rotationAlpha: roundForDebug(this.rotationAlpha),
+      scaleAlpha: roundForDebug(this.scaleAlpha),
+      deadzone: {
+        positionM: roundForDebug(config.positionDeadzoneM),
+        rotationDeg: roundForDebug(THREE.MathUtils.radToDeg(config.rotationDeadzoneRad)),
+        scale: roundForDebug(config.scaleDeadzone)
+      },
+      targetFoundEvents: this.targetFoundEvents,
+      targetLostEvents: this.targetLostEvents,
+      timeSinceLastTargetFoundMs: this.lastFoundAtMs
+        ? roundForDebug(now - this.lastFoundAtMs)
+        : null,
+      timeSinceLastTargetLostMs: this.lastLostAtMs
+        ? roundForDebug(now - this.lastLostAtMs)
+        : null,
+      lastRawPoseAgeMs: this.lastRawAtMs ? roundForDebug(now - this.lastRawAtMs) : null
+    };
+  }
+
+  private adaptiveAlphaAt60Fps(config: ARStabilityConfig) {
+    const positionMotion = normalizedMotion(
+      Math.max(this.rawToSmoothedPositionDeltaM, this.positionJitterDeltaM),
+      config.positionDeadzoneM,
+      config.positionCatchupM
+    );
+    const rotationMotion = normalizedMotion(
+      Math.max(this.rawToSmoothedRotationDeltaRad, this.rotationJitterDeltaRad),
+      config.rotationDeadzoneRad,
+      config.rotationCatchupRad
+    );
+    const scaleMotion = normalizedMotion(
+      Math.max(this.rawToSmoothedScaleDelta, this.scaleJitterDelta),
+      config.scaleDeadzone,
+      config.scaleCatchup
+    );
+    const motion = Math.max(positionMotion, rotationMotion, scaleMotion);
+
+    return THREE.MathUtils.lerp(config.minAlphaAt60Fps, config.maxAlphaAt60Fps, motion);
+  }
+
+  private updateRawToSmoothedDeltas() {
+    this.rawToSmoothedPositionDeltaM = this.smoothedPosition.distanceTo(this.rawPosition);
+    this.rawToSmoothedRotationDeltaRad = this.smoothedQuaternion.angleTo(this.rawQuaternion);
+    this.rawToSmoothedScaleDelta = scaleDelta(this.smoothedScale, this.rawScale);
+  }
+}
+
+function normalizedMotion(value: number, deadzone: number, catchup: number) {
+  const range = Math.max(catchup - deadzone, 0.000001);
+  return THREE.MathUtils.clamp((value - deadzone) / range, 0, 1);
+}
+
+function scaleDelta(first: THREE.Vector3, second: THREE.Vector3) {
+  return Math.max(
+    Math.abs(first.x - second.x),
+    Math.abs(first.y - second.y),
+    Math.abs(first.z - second.z)
+  );
+}
+
+function isFiniteVector(vector: THREE.Vector3) {
+  return Number.isFinite(vector.x) && Number.isFinite(vector.y) && Number.isFinite(vector.z);
+}
+
+function isFiniteQuaternion(quaternion: THREE.Quaternion) {
+  return (
+    Number.isFinite(quaternion.x) &&
+    Number.isFinite(quaternion.y) &&
+    Number.isFinite(quaternion.z) &&
+    Number.isFinite(quaternion.w)
+  );
+}
+
+function isUsableMatrix(matrix: THREE.Matrix4) {
+  return matrix.elements.every(Number.isFinite) && Math.abs(matrix.determinant()) > 1e-12;
 }
 
 function createPostMatrix(targetWidth: number, targetHeight: number) {
@@ -897,19 +1383,50 @@ function transformDebugFromRuntime(transform: {
   };
 }
 
+function transformDebugFromMatrix(matrix: THREE.Matrix4): TransformDebug {
+  const position = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+
+  matrix.decompose(position, quaternion, scale);
+  return transformDebugFromParts(position, quaternion, scale);
+}
+
+function transformDebugFromParts(
+  position: THREE.Vector3,
+  quaternion: THREE.Quaternion,
+  scale: THREE.Vector3
+): TransformDebug {
+  const rotation = new THREE.Euler().setFromQuaternion(quaternion, "XYZ");
+
+  return {
+    position: vectorDebug(position),
+    rotation: eulerDegreesDebug(rotation),
+    scale: vectorDebug(scale)
+  };
+}
+
 function buildLiveDebugSnapshot({
   video,
+  renderer,
   targetAnchor,
+  stabilizedRoot,
   boardReferenceGroup,
   desktopViewportTransformGroup,
   modelCorrectionGroup,
   scaleRoot,
   activeModel,
   activeCorrectionMetrics,
-  targetVisible
+  targetVisible,
+  stabilityMode,
+  poseStabilizer,
+  frameRateTracker,
+  now
 }: {
   video: HTMLVideoElement;
+  renderer: THREE.WebGLRenderer;
   targetAnchor: THREE.Group;
+  stabilizedRoot: THREE.Group;
   boardReferenceGroup: THREE.Group;
   desktopViewportTransformGroup: THREE.Group;
   modelCorrectionGroup: THREE.Group;
@@ -917,14 +1434,35 @@ function buildLiveDebugSnapshot({
   activeModel: THREE.Object3D | null;
   activeCorrectionMetrics: ModelCorrectionMetrics | null;
   targetVisible: boolean;
+  stabilityMode: ARStabilityMode;
+  poseStabilizer: PoseStabilizer;
+  frameRateTracker: FrameRateTracker;
+  now: number;
 }) {
   const correctedBounds = boundsDebug(modelCorrectionGroup);
+  const stabilityConfig = getStabilityConfig(stabilityMode);
+  const frameDebug = frameRateTracker.debug();
+  const modelStats = modelStatsDebug(activeModel);
+  const viewport = viewportDebug();
 
   return {
     sampledAt: new Date().toISOString(),
     trackingMode: "MindAR",
+    stabilityMode: stabilityConfig.label,
+    stabilityModeKey: stabilityMode,
+    fpsEstimate: frameDebug.fpsEstimate,
+    frameTimeEstimateMs: frameDebug.frameTimeEstimateMs,
     targetVisible,
-    viewport: viewportDebug(),
+    rendererPixelRatio: roundForDebug(renderer.getPixelRatio()),
+    viewport,
+    viewportSize: {
+      width: viewport.width,
+      height: viewport.height
+    },
+    videoResolution: {
+      width: video.videoWidth,
+      height: video.videoHeight
+    },
     video: {
       videoWidth: video.videoWidth,
       videoHeight: video.videoHeight,
@@ -932,7 +1470,14 @@ function buildLiveDebugSnapshot({
       clientHeight: video.clientHeight,
       readyState: video.readyState
     },
+    stability: poseStabilizer.debug(now, stabilityMode),
+    rawTargetAnchorTransform: objectLocalDebug(targetAnchor),
+    smoothedTargetTransform: objectWorldDebug(stabilizedRoot),
+    stabilizedRootLocalTransform: objectLocalDebug(stabilizedRoot),
+    modelLoaded: Boolean(activeModel),
+    modelStats,
     targetAnchorWorld: objectWorldDebug(targetAnchor),
+    stabilizedRootWorld: objectWorldDebug(stabilizedRoot),
     boardReferenceWorld: objectWorldDebug(boardReferenceGroup),
     desktopViewportTransform: objectLocalDebug(desktopViewportTransformGroup),
     modelCorrectionTransform: objectLocalDebug(modelCorrectionGroup),
@@ -948,6 +1493,60 @@ function buildLiveDebugSnapshot({
     correctedBounds,
     longestDimensionAxisAfterTransforms: longestAxisFromDebugBounds(correctedBounds)
   };
+}
+
+function modelStatsDebug(root: THREE.Object3D | null) {
+  if (!root) {
+    return {
+      modelLoaded: false,
+      meshCount: 0,
+      triangleCount: 0,
+      materialCount: 0,
+      textureCount: 0,
+      geometryCount: 0
+    };
+  }
+
+  const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
+  const geometries = new Set<THREE.BufferGeometry>();
+  let meshCount = 0;
+  let triangleCount = 0;
+
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh) || !child.geometry) return;
+
+    meshCount += 1;
+    geometries.add(child.geometry);
+    const index = child.geometry.getIndex();
+    const position = child.geometry.getAttribute("position");
+    const vertexCount = index?.count || position?.count || 0;
+    triangleCount += Math.floor(vertexCount / 3);
+
+    const childMaterials = Array.isArray(child.material) ? child.material : [child.material];
+    childMaterials.forEach((material) => {
+      if (!material) return;
+      materials.add(material);
+      collectMaterialTextures(material, textures);
+    });
+  });
+
+  return {
+    modelLoaded: true,
+    meshCount,
+    triangleCount,
+    materialCount: materials.size,
+    textureCount: textures.size,
+    geometryCount: geometries.size
+  };
+}
+
+function collectMaterialTextures(material: THREE.Material, textures: Set<THREE.Texture>) {
+  Object.values(material as unknown as Record<string, unknown>).forEach((value) => {
+    if (value instanceof THREE.Texture) {
+      textures.add(value);
+    }
+  });
 }
 
 function forceVisibleModel(root: THREE.Object3D) {
