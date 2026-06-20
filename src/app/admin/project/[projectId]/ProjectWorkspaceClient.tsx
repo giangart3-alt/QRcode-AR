@@ -925,7 +925,11 @@ function SceneInspector({
         <h3 className="text-sm font-semibold text-[var(--ink)]">Image target</h3>
         <div className="mt-3 overflow-hidden rounded-md border border-[var(--line)] bg-[var(--soft)]">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={project.target.previewUrl || project.target.imageUrl} alt="Masterplan image target" className="aspect-[14012/11633] w-full object-cover" />
+          <img
+            src={project.target.previewUrl || project.target.imageUrl}
+            alt="Marker-frame masterplan image target"
+            className="aspect-[2048/1700] w-full object-contain"
+          />
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2">
           <NumberField
@@ -956,6 +960,11 @@ function SceneInspector({
         <a className="button-compact mt-3 w-full justify-center" href={project.target.imageUrl} download>
           Download target image
         </a>
+        <p className="mt-2 text-xs font-semibold leading-5 text-[var(--muted)]">
+          Target version: {project.target.targetVersion}. {project.target.pixelWidth} x{" "}
+          {project.target.pixelHeight}px, {formatNumber(project.target.widthMm)} x{" "}
+          {formatNumber(project.target.heightMm)}mm.
+        </p>
 
         <div className="mt-3 rounded-lg border border-dashed border-[var(--line)] bg-[var(--soft)] p-3">
           <h4 className="text-sm font-semibold text-[var(--ink)]">Technical MindAR target</h4>
@@ -1075,7 +1084,9 @@ function SceneInspector({
             onChange={(event) => onNormalizedScaleChange(event.target.value)}
             className="mt-3 w-full accent-[var(--accent)]"
           />
-          <p className="mt-2 text-xs font-semibold text-[var(--muted)]">1 = fitted to the masterplan image target.</p>
+          <p className="mt-2 text-xs font-semibold text-[var(--muted)]">
+            1 = fitted to the marker-frame masterplan image target.
+          </p>
         </div>
         {metrics ? (
           <p className="mt-3 rounded-lg border border-[var(--line)] bg-[var(--soft)] p-2 text-xs font-bold text-[var(--muted)]">

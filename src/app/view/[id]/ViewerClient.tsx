@@ -88,7 +88,7 @@ export function ViewerClient({ id }: { id: string }) {
               <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[var(--soft)]">Fallback viewer</p>
               <h1 className="mt-3 text-3xl font-black">{project.name}</h1>
               <p className="mt-4 text-sm leading-6 text-white/70">
-                Use orbit controls to inspect the model. The mobile AR page uses the printed masterplan image as the tracked target.
+                Use orbit controls to inspect the model. The mobile AR page uses the printed marker-frame masterplan image as the tracked target.
               </p>
               <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
                 <div className="rounded-md bg-white/8 p-3">

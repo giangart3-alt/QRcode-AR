@@ -171,7 +171,7 @@ export function AdminClient() {
 
         <h1 className="text-4xl font-black tracking-tight text-[var(--ink)]">Admin</h1>
         <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--muted)]">
-          Upload one GLB at a time. The mobile AR page tracks the masterplan image target.
+          Upload one GLB at a time. The mobile AR page tracks the marker-frame masterplan image target.
         </p>
 
         {!unlocked ? (

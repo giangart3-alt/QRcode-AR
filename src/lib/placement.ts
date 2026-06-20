@@ -1,12 +1,11 @@
-export const MASTERPLAN_TARGET_IMAGE_URL = "/targets/masterplan-preview.jpg";
-export const MASTERPLAN_TARGET_PREVIEW_URL = "/targets/masterplan-preview.jpg";
-export const MASTERPLAN_TARGET_MIND_URL = "/targets/masterplan.mind";
+export const MASTERPLAN_TARGET_VERSION = "marker-frame-masterplan-v1";
+export const MASTERPLAN_TARGET_IMAGE_URL = "/targets/masterplan-marker-frame.png";
+export const MASTERPLAN_TARGET_PREVIEW_URL = "/targets/masterplan-marker-frame.png";
+export const MASTERPLAN_TARGET_MIND_URL = "/targets/masterplan-marker-frame.mind";
 export const MASTERPLAN_TARGET_PIXEL_WIDTH = 2048;
 export const MASTERPLAN_TARGET_PIXEL_HEIGHT = 1700;
 export const DEFAULT_TARGET_WIDTH_MM = 841;
-export const DEFAULT_TARGET_HEIGHT_MM = Math.round(
-  DEFAULT_TARGET_WIDTH_MM * (MASTERPLAN_TARGET_PIXEL_HEIGHT / MASTERPLAN_TARGET_PIXEL_WIDTH)
-);
+export const DEFAULT_TARGET_HEIGHT_MM = 698;
 
 export const MODEL_CORRECTION_MODES = [
   "NONE",
@@ -37,9 +36,12 @@ export type PlacementMetadata = {
 export type ImageTargetSettings = {
   trackingMode: "mindar-image";
   targetIndex: 0;
+  targetVersion: string;
   imageUrl: string;
   previewUrl: string;
   mindUrl: string;
+  pixelWidth: number;
+  pixelHeight: number;
   widthMm: number;
   heightMm: number;
   correctionMode: ModelCorrectionMode;
@@ -84,20 +86,23 @@ export function createDefaultTarget(input?: Partial<ImageTargetSettings>): Image
   const widthMm = positiveNumber(input?.widthMm, DEFAULT_TARGET_WIDTH_MM);
   const heightMm = positiveNumber(
     input?.heightMm,
-    Math.round(widthMm * (MASTERPLAN_TARGET_PIXEL_HEIGHT / MASTERPLAN_TARGET_PIXEL_WIDTH))
+    DEFAULT_TARGET_HEIGHT_MM
   );
 
   return {
     trackingMode: "mindar-image",
     targetIndex: 0,
+    targetVersion: MASTERPLAN_TARGET_VERSION,
     imageUrl: MASTERPLAN_TARGET_IMAGE_URL,
     previewUrl: MASTERPLAN_TARGET_PREVIEW_URL,
     mindUrl: MASTERPLAN_TARGET_MIND_URL,
+    pixelWidth: MASTERPLAN_TARGET_PIXEL_WIDTH,
+    pixelHeight: MASTERPLAN_TARGET_PIXEL_HEIGHT,
     widthMm,
     heightMm,
     correctionMode: normalizeCorrectionMode(input?.correctionMode),
     coordinateSystem: {
-      origin: "center of the masterplan image target",
+      origin: "center of the marker-frame masterplan image target",
       xAxis: "horizontal on the image",
       yAxis: "vertical on the image",
       zAxis: "height above the image",

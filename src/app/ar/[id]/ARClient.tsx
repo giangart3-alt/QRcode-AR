@@ -6,6 +6,10 @@ import * as THREE from "three";
 import { applyMindARBoardSpaceRoot } from "@/lib/coordinates";
 import {
   MASTERPLAN_TARGET_IMAGE_URL,
+  MASTERPLAN_TARGET_MIND_URL,
+  MASTERPLAN_TARGET_PIXEL_HEIGHT,
+  MASTERPLAN_TARGET_PIXEL_WIDTH,
+  MASTERPLAN_TARGET_VERSION,
   getImageTargetGeometry,
   type ImageTargetSettings,
   type PlacementMetadata,
@@ -336,8 +340,14 @@ type RuntimeStatus = {
   targetLost: boolean;
   targetIndex: 0;
   imageTargetLoaded: boolean;
+  imageTargetVersion: string;
   imageTargetSrc: string;
   imageTargetImage: string;
+  imageTargetPixelSize: {
+    width: number;
+    height: number;
+    aspectRatio: number;
+  };
   activeProjectId: string;
   activeSceneId: string;
   activeSceneName: string;
@@ -366,6 +376,7 @@ type RuntimeStatus = {
     heightMm: number;
     widthM: number;
     heightM: number;
+    aspectRatio: number;
     normalizedHeight: number;
   };
   runtimeScale: {
@@ -399,8 +410,13 @@ const INITIAL_STATUS: RuntimeStatus = {
   targetLost: false,
   targetIndex: 0,
   imageTargetLoaded: false,
-  imageTargetSrc: "/targets/masterplan.mind",
+  imageTargetVersion: MASTERPLAN_TARGET_VERSION,
+  imageTargetSrc: MASTERPLAN_TARGET_MIND_URL,
   imageTargetImage: MASTERPLAN_TARGET_IMAGE_URL,
+  imageTargetPixelSize: targetPixelSizeDebug({
+    pixelWidth: MASTERPLAN_TARGET_PIXEL_WIDTH,
+    pixelHeight: MASTERPLAN_TARGET_PIXEL_HEIGHT
+  }),
   activeProjectId: "",
   activeSceneId: "",
   activeSceneName: "",
@@ -546,6 +562,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       stabilityModeLabel: getStabilityConfig(stabilityMode).label,
       publicStatus,
       activeProjectId: project?.id || id,
+      activeTarget: project ? targetDebug(project.target) : null,
       savedStatus: runtimeStatus,
       live: liveDebugRef.current
     };
@@ -604,8 +621,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         activeSceneName: selectedScene?.name || "",
         modelUrl: selectedScene?.modelUrl || "",
         modelPathname: selectedScene?.modelPathname || "",
+        imageTargetVersion: result.project.target.targetVersion,
         imageTargetSrc: result.project.target.mindUrl,
         imageTargetImage: result.project.target.imageUrl,
+        imageTargetPixelSize: targetPixelSizeDebug(result.project.target),
         currentCorrectionMode: result.project.target.correctionMode,
         targetPhysicalSize: targetSizeDebug(result.project.target),
         lastError: "",
@@ -679,8 +698,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         targetFound: false,
         targetLost: false,
         imageTargetLoaded: false,
+        imageTargetVersion: target.targetVersion,
         imageTargetSrc: target.mindUrl,
         imageTargetImage: target.imageUrl,
+        imageTargetPixelSize: targetPixelSizeDebug(target),
         currentCorrectionMode: target.correctionMode,
         targetPhysicalSize: targetSizeDebug(target),
         activeProjectId: currentProject.id,
@@ -1015,6 +1036,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
               desktopViewportTransformGroup,
               modelCorrectionGroup,
               scaleRoot,
+              target,
               activeModel,
               activeCorrectionMetrics,
               targetVisible,
@@ -1467,10 +1489,13 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
     return {
       ...this.getTrackingState(),
       mindARStatus: this.status,
+      targetVersion: this.target?.targetVersion || "",
       inputWidth: this.controller?.inputWidth || 0,
       inputHeight: this.controller?.inputHeight || 0,
       targetMindUrl: this.target?.mindUrl || "",
       targetImageUrl: this.target?.imageUrl || "",
+      targetPixelSize: this.target ? targetPixelSizeDebug(this.target) : null,
+      targetPhysicalSize: this.target ? targetSizeDebug(this.target) : null,
       targetDimensions: this.lastTargetDimensions
         ? {
             width: roundForDebug(this.lastTargetDimensions[0]),
@@ -2675,7 +2700,30 @@ function targetSizeDebug(target: Pick<ImageTargetSettings, "widthMm" | "heightMm
     heightMm: roundForDebug(geometry.heightMm),
     widthM: roundForDebug(geometry.widthM),
     heightM: roundForDebug(geometry.heightM),
+    aspectRatio: roundForDebug(geometry.aspectRatio),
     normalizedHeight: roundForDebug(geometry.normalizedHeight)
+  };
+}
+
+function targetPixelSizeDebug(target: Pick<ImageTargetSettings, "pixelWidth" | "pixelHeight">) {
+  const width = Math.max(Math.round(finiteNumber(target.pixelWidth, MASTERPLAN_TARGET_PIXEL_WIDTH)), 1);
+  const height = Math.max(Math.round(finiteNumber(target.pixelHeight, MASTERPLAN_TARGET_PIXEL_HEIGHT)), 1);
+
+  return {
+    width,
+    height,
+    aspectRatio: roundForDebug(width / height)
+  };
+}
+
+function targetDebug(target: ImageTargetSettings) {
+  return {
+    targetVersion: target.targetVersion,
+    imageUrl: target.imageUrl,
+    previewUrl: target.previewUrl,
+    mindUrl: target.mindUrl,
+    pixelSize: targetPixelSizeDebug(target),
+    physicalSize: targetSizeDebug(target)
   };
 }
 
@@ -2727,6 +2775,7 @@ function buildLiveDebugSnapshot({
   desktopViewportTransformGroup,
   modelCorrectionGroup,
   scaleRoot,
+  target,
   activeModel,
   activeCorrectionMetrics,
   targetVisible,
@@ -2748,6 +2797,7 @@ function buildLiveDebugSnapshot({
   desktopViewportTransformGroup: THREE.Group;
   modelCorrectionGroup: THREE.Group;
   scaleRoot: THREE.Group;
+  target: ImageTargetSettings;
   activeModel: THREE.Object3D | null;
   activeCorrectionMetrics: ModelCorrectionMetrics | null;
   targetVisible: boolean;
@@ -2774,6 +2824,7 @@ function buildLiveDebugSnapshot({
     selectedTrackingModeLabel: TRACKING_MODE_LABELS[selectedTrackingMode],
     activeTrackingProvider: trackingProvider?.id || "",
     activeTrackingProviderLabel: trackingProvider?.label || "",
+    activeTarget: targetDebug(target),
     providerSupportStatus: trackingSupport,
     providerDebugState: trackingProvider?.getDebugState() || null,
     mindARStatus: trackingProvider?.id === "mindar-image" ? trackingProvider.getDebugState() : null,
