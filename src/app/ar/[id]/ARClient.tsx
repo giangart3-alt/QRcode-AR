@@ -52,8 +52,11 @@ type MindARImageRuntime = {
 
 const MINDAR_IMAGE_RUNTIME_URL = "/vendor/mind-ar/mindar-image.prod.js";
 const AR_STABILITY_STORAGE_KEY = "qrcode-ar:stability-mode";
+const AR_TRACKING_MODE_STORAGE_KEY = "qrcode-ar:tracking-mode";
 
-type ARStabilityMode = "realtime" | "balanced" | "stable";
+type ARStabilityMode = "realtime" | "balanced" | "stable" | "presentation-lock";
+type ARTrackingMode = "auto" | "mindar-image" | "webxr-world" | "arkit-ios";
+type TrackingProviderId = "mindar-image" | "webxr-world" | "arkit-ios" | "commercial-placeholder";
 
 type ARStabilityConfig = {
   label: string;
@@ -66,11 +69,83 @@ type ARStabilityConfig = {
   rotationCatchupRad: number;
   scaleCatchup: number;
   pixelRatioMax: number;
+  lostPoseGraceMs: number;
+  lockStableAfterMs: number;
+  lockReleasePositionM: number;
+  lockReleaseRotationRad: number;
+  lockReleaseScale: number;
+};
+
+type TrackingProviderSupport = {
+  supported: boolean;
+  status: "supported" | "unsupported" | "future" | "experimental";
+  reason: string;
+  details?: Record<string, unknown>;
+};
+
+type TrackingProviderSupportMap = Record<TrackingProviderId, TrackingProviderSupport>;
+
+type DeviceProfile = {
+  userAgent: string;
+  platform: string;
+  isAndroid: boolean;
+  isIOS: boolean;
+  isMobile: boolean;
+  browser: string;
+  iOSUsesWebKit: boolean;
+};
+
+type TrackingPoseUpdate = {
+  matrix: THREE.Matrix4;
+  timestampMs: number;
+};
+
+type TrackingState = {
+  providerId: TrackingProviderId;
+  label: string;
+  initialized: boolean;
+  running: boolean;
+  targetVisible: boolean;
+  status: string;
+  foundCount: number;
+  lostCount: number;
+  lastFoundAtMs: number;
+  lastLostAtMs: number;
+  fallbackReason: string;
+};
+
+type TrackingCameraCalibration = {
+  projectionMatrix: number[];
+  inputWidth: number;
+  inputHeight: number;
+} | null;
+
+type TrackingProviderContext = {
+  video: HTMLVideoElement;
+  target: ImageTargetSettings;
+};
+
+type TrackingProvider = {
+  readonly id: TrackingProviderId;
+  readonly label: string;
+  isSupported(): Promise<TrackingProviderSupport>;
+  init(context: TrackingProviderContext): Promise<void>;
+  start(): Promise<void>;
+  stop(): void;
+  dispose(): void;
+  getTrackingState(): TrackingState;
+  getCameraCalibration(): TrackingCameraCalibration;
+  onPoseUpdate(callback: (pose: TrackingPoseUpdate) => void): () => void;
+  onTargetFound(callback: () => void): () => void;
+  onTargetLost(callback: () => void): () => void;
+  getDebugState(): Record<string, unknown>;
 };
 
 const DEFAULT_STABILITY_MODE: ARStabilityMode = "balanced";
+const DEFAULT_TRACKING_MODE: ARTrackingMode = "auto";
 
-const AR_STABILITY_MODES: ARStabilityMode[] = ["realtime", "balanced", "stable"];
+const AR_STABILITY_MODES: ARStabilityMode[] = ["realtime", "balanced", "stable", "presentation-lock"];
+const AR_TRACKING_MODES: ARTrackingMode[] = ["auto", "mindar-image", "webxr-world", "arkit-ios"];
 
 const AR_STABILITY_CONFIGS: Record<ARStabilityMode, ARStabilityConfig> = {
   realtime: {
@@ -83,7 +158,12 @@ const AR_STABILITY_CONFIGS: Record<ARStabilityMode, ARStabilityConfig> = {
     positionCatchupM: 0.025,
     rotationCatchupRad: THREE.MathUtils.degToRad(5),
     scaleCatchup: 0.02,
-    pixelRatioMax: 2
+    pixelRatioMax: 2,
+    lostPoseGraceMs: 0,
+    lockStableAfterMs: 0,
+    lockReleasePositionM: 0.02,
+    lockReleaseRotationRad: THREE.MathUtils.degToRad(4),
+    lockReleaseScale: 0.02
   },
   balanced: {
     label: "Balanced",
@@ -95,7 +175,12 @@ const AR_STABILITY_CONFIGS: Record<ARStabilityMode, ARStabilityConfig> = {
     positionCatchupM: 0.035,
     rotationCatchupRad: THREE.MathUtils.degToRad(7),
     scaleCatchup: 0.03,
-    pixelRatioMax: 2
+    pixelRatioMax: 2,
+    lostPoseGraceMs: 0,
+    lockStableAfterMs: 0,
+    lockReleasePositionM: 0.03,
+    lockReleaseRotationRad: THREE.MathUtils.degToRad(6),
+    lockReleaseScale: 0.03
   },
   stable: {
     label: "Stable",
@@ -107,7 +192,66 @@ const AR_STABILITY_CONFIGS: Record<ARStabilityMode, ARStabilityConfig> = {
     positionCatchupM: 0.05,
     rotationCatchupRad: THREE.MathUtils.degToRad(10),
     scaleCatchup: 0.04,
-    pixelRatioMax: 1.5
+    pixelRatioMax: 1.5,
+    lostPoseGraceMs: 0,
+    lockStableAfterMs: 0,
+    lockReleasePositionM: 0.04,
+    lockReleaseRotationRad: THREE.MathUtils.degToRad(8),
+    lockReleaseScale: 0.04
+  },
+  "presentation-lock": {
+    label: "Presentation Lock",
+    positionDeadzoneM: 0.003,
+    rotationDeadzoneRad: THREE.MathUtils.degToRad(0.65),
+    scaleDeadzone: 0.003,
+    minAlphaAt60Fps: 0.06,
+    maxAlphaAt60Fps: 0.42,
+    positionCatchupM: 0.055,
+    rotationCatchupRad: THREE.MathUtils.degToRad(10),
+    scaleCatchup: 0.045,
+    pixelRatioMax: 1.5,
+    lostPoseGraceMs: 1400,
+    lockStableAfterMs: 650,
+    lockReleasePositionM: 0.045,
+    lockReleaseRotationRad: THREE.MathUtils.degToRad(8),
+    lockReleaseScale: 0.045
+  }
+};
+
+const TRACKING_MODE_LABELS: Record<ARTrackingMode, string> = {
+  auto: "Auto",
+  "mindar-image": "MindAR Image",
+  "webxr-world": "WebXR World",
+  "arkit-ios": "Future iOS ARKit"
+};
+
+const TRACKING_PROVIDER_LABELS: Record<TrackingProviderId, string> = {
+  "mindar-image": "MindAR Image",
+  "webxr-world": "WebXR World",
+  "arkit-ios": "Future iOS ARKit",
+  "commercial-placeholder": "8th Wall / Zappar Placeholder"
+};
+
+const DEFAULT_TRACKING_SUPPORT: TrackingProviderSupportMap = {
+  "mindar-image": {
+    supported: true,
+    status: "supported",
+    reason: "Universal web fallback using camera image tracking."
+  },
+  "webxr-world": {
+    supported: false,
+    status: "unsupported",
+    reason: "WebXR support has not been checked yet."
+  },
+  "arkit-ios": {
+    supported: false,
+    status: "future",
+    reason: "Reserved for a future native iOS App Clip / ARKit adapter."
+  },
+  "commercial-placeholder": {
+    supported: false,
+    status: "future",
+    reason: "Reserved for future commercial providers such as 8th Wall or Zappar."
   }
 };
 
@@ -140,7 +284,13 @@ type BoundsDebug = {
 };
 
 type RuntimeStatus = {
-  trackingMode: "MindAR";
+  trackingMode: string;
+  selectedTrackingMode: ARTrackingMode;
+  activeTrackingProvider: TrackingProviderId | "";
+  activeTrackingProviderLabel: string;
+  trackingProviderFallbackReason: string;
+  trackingSupport: TrackingProviderSupportMap;
+  deviceProfile: DeviceProfile | null;
   projectLoading: boolean;
   projectLoaded: boolean;
   cameraActive: boolean;
@@ -197,7 +347,13 @@ const INITIAL_TARGET_SIZE = targetSizeDebug({
 });
 
 const INITIAL_STATUS: RuntimeStatus = {
-  trackingMode: "MindAR",
+  trackingMode: "MindAR Image",
+  selectedTrackingMode: DEFAULT_TRACKING_MODE,
+  activeTrackingProvider: "",
+  activeTrackingProviderLabel: "",
+  trackingProviderFallbackReason: "",
+  trackingSupport: DEFAULT_TRACKING_SUPPORT,
+  deviceProfile: null,
   projectLoading: true,
   projectLoaded: false,
   cameraActive: false,
@@ -251,12 +407,17 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
   const debugEnabledRef = useRef(debug);
   const [stabilityMode, setStabilityMode] = useState<ARStabilityMode>(readInitialStabilityMode);
   const stabilityModeRef = useRef<ARStabilityMode>(stabilityMode);
+  const [trackingMode, setTrackingMode] = useState<ARTrackingMode>(readInitialTrackingMode);
+  const trackingModeRef = useRef<ARTrackingMode>(trackingMode);
+  const [trackingSupport, setTrackingSupport] = useState<TrackingProviderSupportMap>(DEFAULT_TRACKING_SUPPORT);
+  const trackingSupportRef = useRef<TrackingProviderSupportMap>(DEFAULT_TRACKING_SUPPORT);
   const [project, setProject] = useState<ProjectMetadata | null>(null);
   const [publicStatus, setPublicStatus] = useState<PublicStatus>("camera loading");
   const [runtimeResetKey, setRuntimeResetKey] = useState(0);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>(INITIAL_STATUS);
   const [liveDebugSnapshot, setLiveDebugSnapshot] = useState<Record<string, unknown>>({});
   const [debugCopyStatus, setDebugCopyStatus] = useState("");
+  const [advancedControlsVisible, setAdvancedControlsVisible] = useState(false);
 
   const patchRuntimeStatus = useCallback((next: Partial<RuntimeStatus>) => {
     setRuntimeStatus((current) => ({ ...current, ...next }));
@@ -285,14 +446,53 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     };
   }, []);
 
+  const applyTrackingMode = useCallback((nextMode: ARTrackingMode, persist: boolean) => {
+    trackingModeRef.current = nextMode;
+    setTrackingMode(nextMode);
+
+    if (persist) {
+      try {
+        window.localStorage.setItem(AR_TRACKING_MODE_STORAGE_KEY, nextMode);
+      } catch {
+        // The selected mode still applies for this page even if storage is unavailable.
+      }
+    }
+
+    liveDebugRef.current = {
+      ...liveDebugRef.current,
+      selectedTrackingMode: nextMode,
+      selectedTrackingModeLabel: TRACKING_MODE_LABELS[nextMode]
+    };
+    setRuntimeResetKey((value) => value + 1);
+  }, []);
+
   useEffect(() => {
     debugEnabledRef.current = debug;
   }, [debug]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    detectTrackingProviderSupport().then((support) => {
+      if (cancelled) return;
+      trackingSupportRef.current = support;
+      setTrackingSupport(support);
+    }).catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleStabilityModeChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
     const nextMode = parseStabilityMode(event.target.value) || DEFAULT_STABILITY_MODE;
     applyStabilityMode(nextMode, true);
   }, [applyStabilityMode]);
+
+  const handleTrackingModeChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const nextMode = parseTrackingMode(event.target.value) || DEFAULT_TRACKING_MODE;
+    applyTrackingMode(nextMode, true);
+  }, [applyTrackingMode]);
 
   const copyDebugReport = useCallback(async () => {
     const report = {
@@ -300,6 +500,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       pageUrl: window.location.href,
       userAgent: navigator.userAgent,
       viewport: viewportDebug(),
+      deviceProfile: detectDeviceProfile(),
+      selectedTrackingMode: trackingMode,
+      selectedTrackingModeLabel: TRACKING_MODE_LABELS[trackingMode],
+      trackingSupport,
       stabilityMode,
       stabilityModeLabel: getStabilityConfig(stabilityMode).label,
       publicStatus,
@@ -316,7 +520,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     }
 
     window.setTimeout(() => setDebugCopyStatus(""), 2200);
-  }, [id, project, publicStatus, runtimeStatus, stabilityMode]);
+  }, [id, project, publicStatus, runtimeStatus, stabilityMode, trackingMode, trackingSupport]);
 
   useEffect(() => {
     let cancelled = false;
@@ -326,7 +530,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       patchRuntimeStatus({
         ...INITIAL_STATUS,
         projectLoading: true,
-        activeProjectId: id
+        activeProjectId: id,
+        selectedTrackingMode: trackingModeRef.current,
+        trackingSupport: trackingSupportRef.current,
+        deviceProfile: typeof window === "undefined" ? null : detectDeviceProfile()
       });
 
       const response = await fetch(`/api/projects/${id}`, { cache: "no-store" });
@@ -394,19 +601,25 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     const target = currentProject.target;
     let stopped = false;
     let animationFrame = 0;
-    let controller: MindARController | null = null;
+    let trackingProvider: TrackingProvider | null = null;
     let renderer: THREE.WebGLRenderer | null = null;
     let video: HTMLVideoElement | null = null;
     let activeModel: THREE.Object3D | null = null;
     let activeCorrectionMetrics: ModelCorrectionMetrics | null = null;
     let targetVisible = false;
-    const postMatrix = new THREE.Matrix4();
 
     async function start() {
       setPublicStatus("camera loading");
+      const deviceProfile = detectDeviceProfile();
       patchRuntimeStatus({
         cameraActive: false,
         mindARInitialized: false,
+        selectedTrackingMode: trackingModeRef.current,
+        activeTrackingProvider: "",
+        activeTrackingProviderLabel: "",
+        trackingProviderFallbackReason: "",
+        trackingSupport: trackingSupportRef.current,
+        deviceProfile,
         targetFound: false,
         targetLost: false,
         imageTargetLoaded: false,
@@ -469,9 +682,6 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       if (!mount || stopped) return;
 
       try {
-        const mindarModule = await loadMindARImageRuntime();
-        const ControllerClass = mindarModule.Controller;
-
         renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
         rendererRef.current = renderer;
         renderer.getContext();
@@ -530,72 +740,78 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         const frameRateTracker = new FrameRateTracker();
         let lastDebugSnapshotAtMs = 0;
 
-        controller = new ControllerClass({
-          inputWidth: video.videoWidth,
-          inputHeight: video.videoHeight,
-          maxTrack: 1,
-          warmupTolerance: 3,
-          missTolerance: 8,
-          filterMinCF: null,
-          filterBeta: null,
-          onUpdate: (data) => {
-            if (data.type !== "updateMatrix" || data.targetIndex !== 0) return;
-            if (!video) return;
+        const latestSupport = await detectTrackingProviderSupport();
+        if (stopped) return;
+        trackingSupportRef.current = latestSupport;
+        setTrackingSupport(latestSupport);
 
-            if (data.worldMatrix) {
-              const matrix = new THREE.Matrix4();
-              matrix.fromArray(data.worldMatrix);
-              matrix.multiply(postMatrix);
-              if (!poseStabilizer.setRawMatrix(matrix, performance.now())) return;
-              targetAnchor.matrix.copy(matrix);
-              targetAnchor.visible = true;
-              targetAnchor.updateMatrixWorld(true);
-              stabilizedRoot.visible = true;
+        const providerStartup = await startTrackingProviderWithFallback({
+          selectedMode: trackingModeRef.current,
+          support: latestSupport,
+          deviceProfile,
+          context: {
+            video,
+            target
+          }
+        });
+        if (stopped) return;
+        trackingProvider = providerStartup.provider;
 
-              if (!targetVisible) {
-                targetVisible = true;
-                setPublicStatus("target found");
-                patchRuntimeStatus({ targetFound: true, targetLost: false });
-              }
-            } else {
-              poseStabilizer.markTargetLost(performance.now());
-              targetAnchor.matrix.copy(INVISIBLE_MATRIX);
-              targetAnchor.visible = false;
-              stabilizedRoot.visible = false;
+        const unsubscribePose = trackingProvider.onPoseUpdate(({ matrix, timestampMs }) => {
+          if (!video) return;
+          if (!poseStabilizer.setRawMatrix(matrix, timestampMs)) return;
+          targetAnchor.matrix.copy(matrix);
+          targetAnchor.visible = true;
+          targetAnchor.updateMatrixWorld(true);
+          stabilizedRoot.visible = true;
+        });
+        const unsubscribeFound = trackingProvider.onTargetFound(() => {
+          targetVisible = true;
+          setPublicStatus("target found");
+          patchRuntimeStatus({ targetFound: true, targetLost: false });
+        });
+        const unsubscribeLost = trackingProvider.onTargetLost(() => {
+          const holdingPose = poseStabilizer.markTargetLost(performance.now(), stabilityModeRef.current);
 
-              if (targetVisible) {
-                targetVisible = false;
-                setPublicStatus("target lost");
-                patchRuntimeStatus({ targetFound: false, targetLost: true });
-              } else {
-                setPublicStatus("target searching");
-              }
-            }
+          if (!holdingPose) {
+            targetAnchor.matrix.copy(INVISIBLE_MATRIX);
+            targetAnchor.visible = false;
+            stabilizedRoot.visible = false;
+          }
+
+          if (targetVisible) {
+            targetVisible = false;
+            setPublicStatus("target lost");
+            patchRuntimeStatus({ targetFound: false, targetLost: true });
+          } else {
+            setPublicStatus("target searching");
           }
         });
 
-        resizeMindArView({
+        resizeTrackingView({
           container: mount,
           video,
           renderer,
           camera,
-          controller
+          provider: trackingProvider
         });
         window.addEventListener("resize", resize);
 
-        const { dimensions } = await controller.addImageTargets(target.mindUrl);
-        const [targetWidth, targetHeight] = dimensions[0] || [1, getImageTargetGeometry(target).normalizedHeight];
-        postMatrix.copy(createPostMatrix(targetWidth, targetHeight));
-        await controller.dummyRun(video);
-        if (stopped) return;
-
-        controller.processVideo(video);
-        patchRuntimeStatus({ mindARInitialized: true });
+        patchRuntimeStatus({
+          trackingMode: trackingProvider.label,
+          selectedTrackingMode: trackingModeRef.current,
+          activeTrackingProvider: trackingProvider.id,
+          activeTrackingProviderLabel: trackingProvider.label,
+          trackingProviderFallbackReason: providerStartup.fallbackReason,
+          trackingSupport: latestSupport,
+          deviceProfile,
+          mindARInitialized: trackingProvider.id === "mindar-image"
+        });
         setPublicStatus("target searching");
 
         function resize() {
-          if (!mount || !video || !renderer || !controller) return;
-          resizeMindArView({ container: mount, video, renderer, camera, controller });
+          if (!mount || !video || !renderer || !trackingProvider) return;
+          resizeTrackingView({ container: mount, video, renderer, camera, provider: trackingProvider });
         }
 
         async function loadActiveModel() {
@@ -713,6 +929,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
               activeCorrectionMetrics,
               targetVisible,
               stabilityMode: stabilityModeRef.current,
+              selectedTrackingMode: trackingModeRef.current,
+              trackingProvider,
+              trackingSupport: latestSupport,
+              deviceProfile,
               poseStabilizer,
               frameRateTracker,
               now
@@ -729,7 +949,11 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           stopped = true;
           window.cancelAnimationFrame(animationFrame);
           window.removeEventListener("resize", resize);
-          controller?.stopProcessVideo();
+          unsubscribePose();
+          unsubscribeFound();
+          unsubscribeLost();
+          trackingProvider?.stop();
+          trackingProvider?.dispose();
           const stream = video?.srcObject instanceof MediaStream ? video.srcObject : null;
           stream?.getTracks().forEach((track) => track.stop());
           video?.remove();
@@ -744,7 +968,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         animate();
         void loadActiveModel();
       } catch (caught) {
-        const errorMessage = caught instanceof Error ? caught.message : "MindAR init failed";
+        const errorMessage = caught instanceof Error ? caught.message : "Tracking provider init failed";
         fail(errorMessage.includes("Permission") ? "camera denied" : errorMessage, "mindar");
       }
     }
@@ -770,7 +994,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     }
 
     start().catch((caught) => {
-      const errorMessage = caught instanceof Error ? caught.message : "MindAR runtime error.";
+      const errorMessage = caught instanceof Error ? caught.message : "Tracking runtime error.";
       setPublicStatus("model error");
       patchRuntimeStatus({
         modelLoading: false,
@@ -798,21 +1022,51 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           {publicStatus}
         </p>
         <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
-          <label className="flex items-center gap-1.5 rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold backdrop-blur">
-            <span>Stability:</span>
-            <select
-              aria-label="AR stability mode"
-              className="rounded bg-white px-1.5 py-1 text-xs font-semibold text-black"
-              value={stabilityMode}
-              onChange={handleStabilityModeChange}
-            >
-              {AR_STABILITY_MODES.map((mode) => (
-                <option key={mode} value={mode}>
-                  {getStabilityConfig(mode).label}
-                </option>
-              ))}
-            </select>
-          </label>
+          {advancedControlsVisible ? (
+            <>
+              <label className="flex items-center gap-1.5 rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold backdrop-blur">
+                <span>Tracking:</span>
+                <select
+                  aria-label="AR tracking mode"
+                  className="rounded bg-white px-1.5 py-1 text-xs font-semibold text-black disabled:bg-white/50"
+                  value={trackingMode}
+                  onChange={handleTrackingModeChange}
+                >
+                  <option value="auto">{TRACKING_MODE_LABELS.auto}</option>
+                  <option value="mindar-image">{TRACKING_MODE_LABELS["mindar-image"]}</option>
+                  <option value="webxr-world" disabled={!trackingSupport["webxr-world"].supported}>
+                    {TRACKING_MODE_LABELS["webxr-world"]}
+                    {trackingSupport["webxr-world"].supported ? "" : " (unsupported)"}
+                  </option>
+                  <option value="arkit-ios" disabled>
+                    {TRACKING_MODE_LABELS["arkit-ios"]} (future)
+                  </option>
+                </select>
+              </label>
+              <label className="flex items-center gap-1.5 rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold backdrop-blur">
+                <span>Stability:</span>
+                <select
+                  aria-label="AR stability mode"
+                  className="rounded bg-white px-1.5 py-1 text-xs font-semibold text-black"
+                  value={stabilityMode}
+                  onChange={handleStabilityModeChange}
+                >
+                  {AR_STABILITY_MODES.map((mode) => (
+                    <option key={mode} value={mode}>
+                      {getStabilityConfig(mode).label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          ) : null}
+          <button
+            type="button"
+            className="focus-ring rounded bg-black/60 px-3 py-2 text-xs font-semibold text-white backdrop-blur hover:bg-black/75"
+            onClick={() => setAdvancedControlsVisible((visible) => !visible)}
+          >
+            {advancedControlsVisible ? "Hide controls" : "Controls"}
+          </button>
           {debugCopyStatus ? (
             <span className="rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold backdrop-blur">
               {debugCopyStatus}
@@ -860,6 +1114,9 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           <pre className="max-w-3xl overflow-auto rounded bg-black/70 p-3 text-xs leading-5 text-[var(--soft)]">
             {JSON.stringify(
               {
+                selectedTrackingMode: TRACKING_MODE_LABELS[trackingMode],
+                selectedTrackingModeKey: trackingMode,
+                trackingSupport,
                 stabilityMode: getStabilityConfig(stabilityMode).label,
                 stabilityModeKey: stabilityMode,
                 publicStatus,
@@ -944,10 +1201,429 @@ async function loadMindARImageRuntime() {
   return (await import(/* webpackIgnore: true */ moduleUrl)) as MindARImageRuntime;
 }
 
+abstract class BaseTrackingProvider implements TrackingProvider {
+  protected initialized = false;
+  protected running = false;
+  protected targetVisible = false;
+  protected foundCount = 0;
+  protected lostCount = 0;
+  protected lastFoundAtMs = 0;
+  protected lastLostAtMs = 0;
+  protected status = "idle";
+  protected fallbackReason = "";
+  private poseCallbacks = new Set<(pose: TrackingPoseUpdate) => void>();
+  private foundCallbacks = new Set<() => void>();
+  private lostCallbacks = new Set<() => void>();
+
+  abstract readonly id: TrackingProviderId;
+  abstract readonly label: string;
+  abstract isSupported(): Promise<TrackingProviderSupport>;
+  abstract init(context: TrackingProviderContext): Promise<void>;
+  abstract start(): Promise<void>;
+  abstract stop(): void;
+  abstract dispose(): void;
+
+  getTrackingState(): TrackingState {
+    return {
+      providerId: this.id,
+      label: this.label,
+      initialized: this.initialized,
+      running: this.running,
+      targetVisible: this.targetVisible,
+      status: this.status,
+      foundCount: this.foundCount,
+      lostCount: this.lostCount,
+      lastFoundAtMs: this.lastFoundAtMs,
+      lastLostAtMs: this.lastLostAtMs,
+      fallbackReason: this.fallbackReason
+    };
+  }
+
+  getCameraCalibration(): TrackingCameraCalibration {
+    return null;
+  }
+
+  onPoseUpdate(callback: (pose: TrackingPoseUpdate) => void) {
+    this.poseCallbacks.add(callback);
+    return () => this.poseCallbacks.delete(callback);
+  }
+
+  onTargetFound(callback: () => void) {
+    this.foundCallbacks.add(callback);
+    return () => this.foundCallbacks.delete(callback);
+  }
+
+  onTargetLost(callback: () => void) {
+    this.lostCallbacks.add(callback);
+    return () => this.lostCallbacks.delete(callback);
+  }
+
+  getDebugState(): Record<string, unknown> {
+    return this.getTrackingState();
+  }
+
+  protected emitPose(matrix: THREE.Matrix4, timestampMs: number) {
+    this.poseCallbacks.forEach((callback) => callback({ matrix, timestampMs }));
+  }
+
+  protected emitFound(now: number) {
+    if (!this.targetVisible) {
+      this.foundCount += 1;
+      this.lastFoundAtMs = now;
+      this.foundCallbacks.forEach((callback) => callback());
+    }
+
+    this.targetVisible = true;
+  }
+
+  protected emitLost(now: number) {
+    if (this.targetVisible) {
+      this.lostCount += 1;
+      this.lastLostAtMs = now;
+      this.lostCallbacks.forEach((callback) => callback());
+    }
+
+    this.targetVisible = false;
+  }
+}
+
+class MindARImageTrackingProvider extends BaseTrackingProvider {
+  readonly id = "mindar-image" as const;
+  readonly label = TRACKING_PROVIDER_LABELS["mindar-image"];
+  private controller: MindARController | null = null;
+  private video: HTMLVideoElement | null = null;
+  private target: ImageTargetSettings | null = null;
+  private postMatrix = new THREE.Matrix4();
+  private lastTargetDimensions: [number, number] | null = null;
+
+  async isSupported(): Promise<TrackingProviderSupport> {
+    return DEFAULT_TRACKING_SUPPORT["mindar-image"];
+  }
+
+  async init({ video, target }: TrackingProviderContext) {
+    this.video = video;
+    this.target = target;
+    this.status = "loading MindAR runtime";
+
+    const mindarModule = await loadMindARImageRuntime();
+    const ControllerClass = mindarModule.Controller;
+    this.controller = new ControllerClass({
+      inputWidth: video.videoWidth,
+      inputHeight: video.videoHeight,
+      maxTrack: 1,
+      warmupTolerance: 3,
+      missTolerance: 8,
+      filterMinCF: null,
+      filterBeta: null,
+      onUpdate: (data) => this.handleUpdate(data)
+    });
+
+    this.status = "loading image target";
+    const { dimensions } = await this.controller.addImageTargets(target.mindUrl);
+    const [targetWidth, targetHeight] =
+      dimensions[0] || [1, getImageTargetGeometry(target).normalizedHeight];
+    this.lastTargetDimensions = [targetWidth, targetHeight];
+    this.postMatrix.copy(createPostMatrix(targetWidth, targetHeight));
+
+    this.status = "warming up";
+    await this.controller.dummyRun(video);
+    this.initialized = true;
+    this.status = "initialized";
+  }
+
+  async start() {
+    if (!this.controller || !this.video) {
+      throw new Error("MindAR provider has not been initialized.");
+    }
+
+    this.controller.processVideo(this.video);
+    this.running = true;
+    this.status = "running";
+  }
+
+  stop() {
+    this.controller?.stopProcessVideo();
+    this.running = false;
+    this.status = this.initialized ? "stopped" : "idle";
+  }
+
+  dispose() {
+    this.stop();
+    this.controller = null;
+    this.video = null;
+    this.target = null;
+    this.initialized = false;
+    this.targetVisible = false;
+    this.status = "disposed";
+  }
+
+  getCameraCalibration(): TrackingCameraCalibration {
+    if (!this.controller) return null;
+
+    return {
+      projectionMatrix: this.controller.getProjectionMatrix(),
+      inputWidth: this.controller.inputWidth,
+      inputHeight: this.controller.inputHeight
+    };
+  }
+
+  getDebugState(): Record<string, unknown> {
+    return {
+      ...this.getTrackingState(),
+      mindARStatus: this.status,
+      inputWidth: this.controller?.inputWidth || 0,
+      inputHeight: this.controller?.inputHeight || 0,
+      targetMindUrl: this.target?.mindUrl || "",
+      targetImageUrl: this.target?.imageUrl || "",
+      targetDimensions: this.lastTargetDimensions
+        ? {
+            width: roundForDebug(this.lastTargetDimensions[0]),
+            height: roundForDebug(this.lastTargetDimensions[1])
+          }
+        : null
+    };
+  }
+
+  private handleUpdate(data: MindARUpdate) {
+    if (data.type !== "updateMatrix" || data.targetIndex !== 0) return;
+    const now = performance.now();
+
+    if (data.worldMatrix) {
+      const matrix = new THREE.Matrix4();
+      matrix.fromArray(data.worldMatrix);
+      matrix.multiply(this.postMatrix);
+      if (!isUsableMatrix(matrix)) return;
+
+      this.emitFound(now);
+      this.emitPose(matrix, now);
+      return;
+    }
+
+    this.emitLost(now);
+  }
+}
+
+class WebXRWorldTrackingProvider extends BaseTrackingProvider {
+  readonly id = "webxr-world" as const;
+  readonly label = TRACKING_PROVIDER_LABELS["webxr-world"];
+  private support: TrackingProviderSupport | null = null;
+
+  async isSupported(): Promise<TrackingProviderSupport> {
+    this.support = await detectWebXRSupport();
+    return this.support;
+  }
+
+  async init() {
+    const support = this.support || await this.isSupported();
+    if (!support.supported) {
+      throw new Error(support.reason);
+    }
+
+    this.initialized = true;
+    this.status = "experimental guard";
+  }
+
+  async start() {
+    const support = this.support || await this.isSupported();
+    if (!support.supported) {
+      throw new Error(support.reason);
+    }
+
+    this.fallbackReason =
+      "WebXR immersive-ar is supported, but this experimental adapter is guarded until a world-placement calibration flow is added.";
+    this.status = "guarded fallback";
+    throw new Error(this.fallbackReason);
+  }
+
+  stop() {
+    this.running = false;
+    this.status = this.initialized ? "stopped" : "idle";
+  }
+
+  dispose() {
+    this.stop();
+    this.initialized = false;
+    this.targetVisible = false;
+    this.status = "disposed";
+  }
+
+  getDebugState(): Record<string, unknown> {
+    return {
+      ...this.getTrackingState(),
+      webXRSupport: this.support,
+      implementation: "guarded experimental provider; falls back to MindAR until world placement is implemented"
+    };
+  }
+}
+
+class FutureARKitProvider extends BaseTrackingProvider {
+  readonly id = "arkit-ios" as const;
+  readonly label = TRACKING_PROVIDER_LABELS["arkit-ios"];
+
+  async isSupported(): Promise<TrackingProviderSupport> {
+    return DEFAULT_TRACKING_SUPPORT["arkit-ios"];
+  }
+
+  async init() {
+    throw new Error(DEFAULT_TRACKING_SUPPORT["arkit-ios"].reason);
+  }
+
+  async start() {
+    throw new Error(DEFAULT_TRACKING_SUPPORT["arkit-ios"].reason);
+  }
+
+  stop() {
+    this.running = false;
+  }
+
+  dispose() {
+    this.initialized = false;
+    this.targetVisible = false;
+  }
+}
+
+class OptionalProviderPlaceholder extends BaseTrackingProvider {
+  readonly id = "commercial-placeholder" as const;
+  readonly label = TRACKING_PROVIDER_LABELS["commercial-placeholder"];
+
+  async isSupported(): Promise<TrackingProviderSupport> {
+    return DEFAULT_TRACKING_SUPPORT["commercial-placeholder"];
+  }
+
+  async init() {
+    throw new Error(DEFAULT_TRACKING_SUPPORT["commercial-placeholder"].reason);
+  }
+
+  async start() {
+    throw new Error(DEFAULT_TRACKING_SUPPORT["commercial-placeholder"].reason);
+  }
+
+  stop() {
+    this.running = false;
+  }
+
+  dispose() {
+    this.initialized = false;
+    this.targetVisible = false;
+  }
+}
+
+function createTrackingProvider(providerId: TrackingProviderId): TrackingProvider {
+  if (providerId === "webxr-world") return new WebXRWorldTrackingProvider();
+  if (providerId === "arkit-ios") return new FutureARKitProvider();
+  if (providerId === "commercial-placeholder") return new OptionalProviderPlaceholder();
+  return new MindARImageTrackingProvider();
+}
+
+function resolveTrackingProviderId({
+  selectedMode,
+  support,
+  deviceProfile
+}: {
+  selectedMode: ARTrackingMode;
+  support: TrackingProviderSupportMap;
+  deviceProfile: DeviceProfile;
+}) {
+  if (selectedMode === "mindar-image") {
+    return {
+      providerId: "mindar-image" as const,
+      fallbackReason: ""
+    };
+  }
+
+  if (selectedMode === "webxr-world") {
+    return support["webxr-world"].supported
+      ? {
+          providerId: "webxr-world" as const,
+          fallbackReason: ""
+        }
+      : {
+          providerId: "mindar-image" as const,
+          fallbackReason: support["webxr-world"].reason
+        };
+  }
+
+  if (selectedMode === "arkit-ios") {
+    return {
+      providerId: "mindar-image" as const,
+      fallbackReason: DEFAULT_TRACKING_SUPPORT["arkit-ios"].reason
+    };
+  }
+
+  if (deviceProfile.isAndroid && support["webxr-world"].supported) {
+    return {
+      providerId: "webxr-world" as const,
+      fallbackReason: "Auto selected WebXR on Android because immersive-ar is supported."
+    };
+  }
+
+  if (deviceProfile.isIOS) {
+    return {
+      providerId: "mindar-image" as const,
+      fallbackReason: "Auto selected MindAR because iOS browsers use WebKit; Chrome on iPhone does not unlock WebXR/ARCore."
+    };
+  }
+
+  return {
+    providerId: "mindar-image" as const,
+    fallbackReason: support["webxr-world"].supported
+      ? "Auto kept MindAR as the universal image-target provider on this device."
+      : support["webxr-world"].reason
+  };
+}
+
+async function startTrackingProviderWithFallback({
+  selectedMode,
+  support,
+  deviceProfile,
+  context
+}: {
+  selectedMode: ARTrackingMode;
+  support: TrackingProviderSupportMap;
+  deviceProfile: DeviceProfile;
+  context: TrackingProviderContext;
+}) {
+  const resolved = resolveTrackingProviderId({ selectedMode, support, deviceProfile });
+  const firstProvider = createTrackingProvider(resolved.providerId);
+
+  try {
+    await firstProvider.init(context);
+    await firstProvider.start();
+
+    return {
+      provider: firstProvider,
+      fallbackReason: resolved.fallbackReason
+    };
+  } catch (caught) {
+    firstProvider.dispose();
+
+    if (resolved.providerId === "mindar-image") {
+      throw caught;
+    }
+
+    const fallbackProvider = new MindARImageTrackingProvider();
+    await fallbackProvider.init(context);
+    await fallbackProvider.start();
+
+    const caughtMessage = caught instanceof Error ? caught.message : "Selected provider failed.";
+    return {
+      provider: fallbackProvider,
+      fallbackReason: `${resolved.fallbackReason ? `${resolved.fallbackReason} ` : ""}${caughtMessage} Falling back to MindAR Image.`
+    };
+  }
+}
+
 function parseStabilityMode(value: string | null): ARStabilityMode | null {
   if (!value) return null;
   return AR_STABILITY_MODES.includes(value as ARStabilityMode)
     ? (value as ARStabilityMode)
+    : null;
+}
+
+function parseTrackingMode(value: string | null): ARTrackingMode | null {
+  if (!value) return null;
+  return AR_TRACKING_MODES.includes(value as ARTrackingMode)
+    ? (value as ARTrackingMode)
     : null;
 }
 
@@ -961,6 +1637,16 @@ function readInitialStabilityMode(): ARStabilityMode {
   }
 }
 
+function readInitialTrackingMode(): ARTrackingMode {
+  if (typeof window === "undefined") return DEFAULT_TRACKING_MODE;
+
+  try {
+    return parseTrackingMode(window.localStorage.getItem(AR_TRACKING_MODE_STORAGE_KEY)) || DEFAULT_TRACKING_MODE;
+  } catch {
+    return DEFAULT_TRACKING_MODE;
+  }
+}
+
 function getStabilityConfig(mode: ARStabilityMode) {
   return AR_STABILITY_CONFIGS[mode] || AR_STABILITY_CONFIGS[DEFAULT_STABILITY_MODE];
 }
@@ -971,6 +1657,104 @@ function applyRendererPixelRatio(renderer: THREE.WebGLRenderer, mode: ARStabilit
   const pixelRatio = Math.max(1, Math.min(deviceRatio, config.pixelRatioMax));
   renderer.setPixelRatio(pixelRatio);
   return pixelRatio;
+}
+
+function detectDeviceProfile(): DeviceProfile {
+  const userAgent = navigator.userAgent || "";
+  const platform = navigator.platform || "";
+  const isIPadOSDesktopMode =
+    platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  const isIOS = /iPad|iPhone|iPod/i.test(userAgent) || isIPadOSDesktopMode;
+  const isAndroid = /Android/i.test(userAgent);
+  const browser = browserNameFromUserAgent(userAgent, isIOS);
+
+  return {
+    userAgent,
+    platform,
+    isAndroid,
+    isIOS,
+    isMobile: isAndroid || isIOS || /Mobile/i.test(userAgent),
+    browser,
+    iOSUsesWebKit: isIOS
+  };
+}
+
+function browserNameFromUserAgent(userAgent: string, isIOS: boolean) {
+  if (isIOS && /CriOS/i.test(userAgent)) return "Chrome on iOS (WebKit)";
+  if (isIOS && /FxiOS/i.test(userAgent)) return "Firefox on iOS (WebKit)";
+  if (isIOS && /Safari/i.test(userAgent)) return "Safari on iOS (WebKit)";
+  if (/Edg\//i.test(userAgent)) return "Edge";
+  if (/Chrome\//i.test(userAgent)) return "Chrome";
+  if (/Firefox\//i.test(userAgent)) return "Firefox";
+  if (/Safari\//i.test(userAgent)) return "Safari";
+  return "Unknown";
+}
+
+async function detectTrackingProviderSupport(): Promise<TrackingProviderSupportMap> {
+  const support: TrackingProviderSupportMap = {
+    ...DEFAULT_TRACKING_SUPPORT,
+    "webxr-world": await detectWebXRSupport()
+  };
+
+  return support;
+}
+
+async function detectWebXRSupport(): Promise<TrackingProviderSupport> {
+  const deviceProfile = detectDeviceProfile();
+  const xr = (navigator as Navigator & {
+    xr?: {
+      isSessionSupported?: (mode: string) => Promise<boolean>;
+    };
+  }).xr;
+
+  if (deviceProfile.isIOS) {
+    return {
+      supported: false,
+      status: "unsupported",
+      reason: "WebXR/ARCore is not available through iOS WebKit browsers; Chrome on iPhone uses the same WebKit limitation.",
+      details: {
+        browser: deviceProfile.browser,
+        iOSUsesWebKit: deviceProfile.iOSUsesWebKit
+      }
+    };
+  }
+
+  if (!xr?.isSessionSupported) {
+    return {
+      supported: false,
+      status: "unsupported",
+      reason: "navigator.xr or immersive-ar support check is unavailable.",
+      details: {
+        browser: deviceProfile.browser,
+        isAndroid: deviceProfile.isAndroid
+      }
+    };
+  }
+
+  try {
+    const supported = await xr.isSessionSupported("immersive-ar");
+    return {
+      supported,
+      status: supported ? "experimental" : "unsupported",
+      reason: supported
+        ? "immersive-ar is supported. The WebXR provider is guarded until world-placement calibration is implemented."
+        : "immersive-ar is not supported in this browser/device.",
+      details: {
+        browser: deviceProfile.browser,
+        isAndroid: deviceProfile.isAndroid
+      }
+    };
+  } catch (caught) {
+    return {
+      supported: false,
+      status: "unsupported",
+      reason: caught instanceof Error ? caught.message : "WebXR support check failed.",
+      details: {
+        browser: deviceProfile.browser,
+        isAndroid: deviceProfile.isAndroid
+      }
+    };
+  }
 }
 
 class FrameRateTracker {
@@ -1030,6 +1814,12 @@ class PoseStabilizer {
   private positionAlpha = 0;
   private rotationAlpha = 0;
   private scaleAlpha = 0;
+  private poseLocked = false;
+  private stableSinceMs = 0;
+  private holdPoseUntilMs = 0;
+  private lockedPosition = new THREE.Vector3();
+  private lockedQuaternion = new THREE.Quaternion();
+  private lockedScale = new THREE.Vector3(1, 1, 1);
 
   setRawMatrix(matrix: THREE.Matrix4, now: number) {
     if (!isUsableMatrix(matrix)) return false;
@@ -1053,10 +1843,16 @@ class PoseStabilizer {
       this.scaleJitterDelta = 0;
     }
 
+    const wasHoldingPose = !this.targetVisible && this.hasSmoothedPose && now <= this.holdPoseUntilMs;
+
     if (!this.targetVisible) {
       this.targetFoundEvents += 1;
       this.lastFoundAtMs = now;
-      this.hasSmoothedPose = false;
+      if (!wasHoldingPose) {
+        this.hasSmoothedPose = false;
+        this.poseLocked = false;
+        this.stableSinceMs = 0;
+      }
       this.lastUpdateAtMs = 0;
     }
 
@@ -1084,19 +1880,34 @@ class PoseStabilizer {
     return true;
   }
 
-  markTargetLost(now: number) {
+  markTargetLost(now: number, mode: ARStabilityMode) {
+    const config = getStabilityConfig(mode);
     if (this.targetVisible) {
       this.targetLostEvents += 1;
       this.lastLostAtMs = now;
     }
 
     this.targetVisible = false;
-    this.hasSmoothedPose = false;
     this.lastUpdateAtMs = 0;
     this.smoothingAlpha = 0;
     this.positionAlpha = 0;
     this.rotationAlpha = 0;
     this.scaleAlpha = 0;
+
+    const shouldHoldPose = mode === "presentation-lock" && this.hasSmoothedPose && config.lostPoseGraceMs > 0;
+    if (shouldHoldPose) {
+      this.lockedPosition.copy(this.smoothedPosition);
+      this.lockedQuaternion.copy(this.smoothedQuaternion);
+      this.lockedScale.copy(this.smoothedScale);
+      this.holdPoseUntilMs = now + config.lostPoseGraceMs;
+      return true;
+    }
+
+    this.hasSmoothedPose = false;
+    this.poseLocked = false;
+    this.stableSinceMs = 0;
+    this.holdPoseUntilMs = 0;
+    return false;
   }
 
   applyToRoot({
@@ -1110,7 +1921,13 @@ class PoseStabilizer {
     mode: ARStabilityMode;
     now: number;
   }) {
-    if (!this.targetVisible || !this.hasRawPose || !this.hasSmoothedPose) {
+    const holdingAfterLoss =
+      mode === "presentation-lock" &&
+      !this.targetVisible &&
+      this.hasSmoothedPose &&
+      now <= this.holdPoseUntilMs;
+
+    if ((!this.targetVisible && !holdingAfterLoss) || !this.hasRawPose || !this.hasSmoothedPose) {
       stabilizedRoot.visible = false;
       return;
     }
@@ -1122,30 +1939,39 @@ class PoseStabilizer {
     this.lastUpdateAtMs = now;
     this.updateRawToSmoothedDeltas();
 
-    const alphaAt60Fps = this.adaptiveAlphaAt60Fps(config);
+    const alphaAt60Fps = holdingAfterLoss ? 0 : this.adaptiveAlphaAt60Fps(config);
     const frameScale = dtMs / (1000 / 60);
     const frameAlpha = 1 - Math.pow(1 - alphaAt60Fps, frameScale);
     this.smoothingAlpha = THREE.MathUtils.clamp(frameAlpha, 0, 1);
 
-    if (this.rawToSmoothedPositionDeltaM > config.positionDeadzoneM) {
+    this.updatePresentationLockState(config, mode, now);
+
+    if (this.poseLocked || holdingAfterLoss) {
+      this.smoothedPosition.copy(this.lockedPosition);
+      this.smoothedQuaternion.copy(this.lockedQuaternion);
+      this.smoothedScale.copy(this.lockedScale);
+      this.positionAlpha = 0;
+      this.rotationAlpha = 0;
+      this.scaleAlpha = 0;
+    } else if (this.rawToSmoothedPositionDeltaM > config.positionDeadzoneM) {
       this.smoothedPosition.lerp(this.rawPosition, this.smoothingAlpha);
       this.positionAlpha = this.smoothingAlpha;
     } else {
       this.positionAlpha = 0;
     }
 
-    if (this.rawToSmoothedRotationDeltaRad > config.rotationDeadzoneRad) {
+    if (!this.poseLocked && !holdingAfterLoss && this.rawToSmoothedRotationDeltaRad > config.rotationDeadzoneRad) {
       this.smoothedQuaternion.slerp(this.rawQuaternion, this.smoothingAlpha);
       this.smoothedQuaternion.normalize();
       this.rotationAlpha = this.smoothingAlpha;
-    } else {
+    } else if (!this.poseLocked && !holdingAfterLoss) {
       this.rotationAlpha = 0;
     }
 
-    if (this.rawToSmoothedScaleDelta > config.scaleDeadzone) {
+    if (!this.poseLocked && !holdingAfterLoss && this.rawToSmoothedScaleDelta > config.scaleDeadzone) {
       this.smoothedScale.lerp(this.rawScale, this.smoothingAlpha);
       this.scaleAlpha = this.smoothingAlpha;
-    } else {
+    } else if (!this.poseLocked && !holdingAfterLoss) {
       this.scaleAlpha = 0;
     }
 
@@ -1179,6 +2005,9 @@ class PoseStabilizer {
       currentStabilityModeKey: mode,
       targetVisible: this.targetVisible,
       hasRawPose: this.hasRawPose,
+      presentationLocked: this.poseLocked,
+      holdingPoseAfterLoss: this.hasSmoothedPose && !this.targetVisible && now <= this.holdPoseUntilMs,
+      holdPoseRemainingMs: this.holdPoseUntilMs > now ? roundForDebug(this.holdPoseUntilMs - now) : 0,
       rawTargetPose: this.hasRawPose ? transformDebugFromMatrix(this.rawMatrix) : null,
       smoothedTargetPose: this.hasSmoothedPose
         ? transformDebugFromParts(this.smoothedPosition, this.smoothedQuaternion, this.smoothedScale)
@@ -1198,7 +2027,10 @@ class PoseStabilizer {
       deadzone: {
         positionM: roundForDebug(config.positionDeadzoneM),
         rotationDeg: roundForDebug(THREE.MathUtils.radToDeg(config.rotationDeadzoneRad)),
-        scale: roundForDebug(config.scaleDeadzone)
+        scale: roundForDebug(config.scaleDeadzone),
+        lockReleasePositionM: roundForDebug(config.lockReleasePositionM),
+        lockReleaseRotationDeg: roundForDebug(THREE.MathUtils.radToDeg(config.lockReleaseRotationRad)),
+        lockReleaseScale: roundForDebug(config.lockReleaseScale)
       },
       targetFoundEvents: this.targetFoundEvents,
       targetLostEvents: this.targetLostEvents,
@@ -1237,6 +2069,46 @@ class PoseStabilizer {
     this.rawToSmoothedPositionDeltaM = this.smoothedPosition.distanceTo(this.rawPosition);
     this.rawToSmoothedRotationDeltaRad = this.smoothedQuaternion.angleTo(this.rawQuaternion);
     this.rawToSmoothedScaleDelta = scaleDelta(this.smoothedScale, this.rawScale);
+  }
+
+  private updatePresentationLockState(config: ARStabilityConfig, mode: ARStabilityMode, now: number) {
+    if (mode !== "presentation-lock" || !this.targetVisible) {
+      this.poseLocked = false;
+      this.stableSinceMs = 0;
+      return;
+    }
+
+    const stableNow =
+      this.positionJitterDeltaM <= config.positionDeadzoneM &&
+      this.rotationJitterDeltaRad <= config.rotationDeadzoneRad &&
+      this.scaleJitterDelta <= config.scaleDeadzone &&
+      this.rawToSmoothedPositionDeltaM <= config.positionDeadzoneM * 2 &&
+      this.rawToSmoothedRotationDeltaRad <= config.rotationDeadzoneRad * 2 &&
+      this.rawToSmoothedScaleDelta <= config.scaleDeadzone * 2;
+
+    if (!stableNow) {
+      this.stableSinceMs = 0;
+    } else if (!this.stableSinceMs) {
+      this.stableSinceMs = now;
+    }
+
+    const realMovementDetected =
+      this.rawToSmoothedPositionDeltaM > config.lockReleasePositionM ||
+      this.rawToSmoothedRotationDeltaRad > config.lockReleaseRotationRad ||
+      this.rawToSmoothedScaleDelta > config.lockReleaseScale;
+
+    if (this.poseLocked && realMovementDetected) {
+      this.poseLocked = false;
+      this.stableSinceMs = 0;
+      return;
+    }
+
+    if (!this.poseLocked && this.stableSinceMs && now - this.stableSinceMs >= config.lockStableAfterMs) {
+      this.poseLocked = true;
+      this.lockedPosition.copy(this.smoothedPosition);
+      this.lockedQuaternion.copy(this.smoothedQuaternion);
+      this.lockedScale.copy(this.smoothedScale);
+    }
   }
 }
 
@@ -1282,21 +2154,22 @@ function createPostMatrix(targetWidth: number, targetHeight: number) {
   return matrix;
 }
 
-function resizeMindArView({
+function resizeTrackingView({
   container,
   video,
   renderer,
   camera,
-  controller
+  provider
 }: {
   container: HTMLElement;
   video: HTMLVideoElement;
   renderer: THREE.WebGLRenderer;
   camera: THREE.PerspectiveCamera;
-  controller: MindARController;
+  provider: TrackingProvider;
 }) {
   video.width = video.videoWidth;
   video.height = video.videoHeight;
+  const calibration = provider.getCameraCalibration();
 
   const videoRatio = video.videoWidth / video.videoHeight;
   const containerRatio = container.clientWidth / container.clientHeight;
@@ -1311,24 +2184,31 @@ function resizeMindArView({
     videoDisplayHeight = videoDisplayWidth / videoRatio;
   }
 
-  const projection = controller.getProjectionMatrix();
-  const inputRatio = controller.inputWidth / controller.inputHeight;
-  const inputAdjust =
-    inputRatio > containerRatio
-      ? video.width / controller.inputWidth
-      : video.height / controller.inputHeight;
-  const adjustedVideoHeight =
-    inputRatio > containerRatio
-      ? container.clientHeight * inputAdjust
-      : (container.clientWidth / controller.inputWidth) * controller.inputHeight * inputAdjust;
-  const fovAdjust = container.clientHeight / adjustedVideoHeight;
-  const fov = 2 * Math.atan((1 / projection[5]) * fovAdjust) * (180 / Math.PI);
-  const near = projection[14] / (projection[10] - 1);
-  const far = projection[14] / (projection[10] + 1);
+  if (calibration) {
+    const projection = calibration.projectionMatrix;
+    const inputRatio = calibration.inputWidth / calibration.inputHeight;
+    const inputAdjust =
+      inputRatio > containerRatio
+        ? video.width / calibration.inputWidth
+        : video.height / calibration.inputHeight;
+    const adjustedVideoHeight =
+      inputRatio > containerRatio
+        ? container.clientHeight * inputAdjust
+        : (container.clientWidth / calibration.inputWidth) * calibration.inputHeight * inputAdjust;
+    const fovAdjust = container.clientHeight / adjustedVideoHeight;
+    const fov = 2 * Math.atan((1 / projection[5]) * fovAdjust) * (180 / Math.PI);
+    const near = projection[14] / (projection[10] - 1);
+    const far = projection[14] / (projection[10] + 1);
 
-  camera.fov = fov;
-  camera.near = near;
-  camera.far = far;
+    camera.fov = fov;
+    camera.near = near;
+    camera.far = far;
+  } else {
+    camera.fov = 60;
+    camera.near = 0.01;
+    camera.far = 100;
+  }
+
   camera.aspect = container.clientWidth / container.clientHeight;
   camera.updateProjectionMatrix();
 
@@ -1419,6 +2299,10 @@ function buildLiveDebugSnapshot({
   activeCorrectionMetrics,
   targetVisible,
   stabilityMode,
+  selectedTrackingMode,
+  trackingProvider,
+  trackingSupport,
+  deviceProfile,
   poseStabilizer,
   frameRateTracker,
   now
@@ -1435,6 +2319,10 @@ function buildLiveDebugSnapshot({
   activeCorrectionMetrics: ModelCorrectionMetrics | null;
   targetVisible: boolean;
   stabilityMode: ARStabilityMode;
+  selectedTrackingMode: ARTrackingMode;
+  trackingProvider: TrackingProvider | null;
+  trackingSupport: TrackingProviderSupportMap;
+  deviceProfile: DeviceProfile;
   poseStabilizer: PoseStabilizer;
   frameRateTracker: FrameRateTracker;
   now: number;
@@ -1447,7 +2335,16 @@ function buildLiveDebugSnapshot({
 
   return {
     sampledAt: new Date().toISOString(),
-    trackingMode: "MindAR",
+    trackingMode: trackingProvider?.label || "",
+    selectedTrackingMode,
+    selectedTrackingModeLabel: TRACKING_MODE_LABELS[selectedTrackingMode],
+    activeTrackingProvider: trackingProvider?.id || "",
+    activeTrackingProviderLabel: trackingProvider?.label || "",
+    providerSupportStatus: trackingSupport,
+    providerDebugState: trackingProvider?.getDebugState() || null,
+    mindARStatus: trackingProvider?.id === "mindar-image" ? trackingProvider.getDebugState() : null,
+    webXRSupportCheck: trackingSupport["webxr-world"],
+    deviceProfile,
     stabilityMode: stabilityConfig.label,
     stabilityModeKey: stabilityMode,
     fpsEstimate: frameDebug.fpsEstimate,
