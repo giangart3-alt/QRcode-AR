@@ -18,6 +18,7 @@ import {
   type ModelBoundsInfo,
   type ModelCorrectionMetrics
 } from "@/lib/scene-transform";
+import { collectModelPerformanceStats } from "@/lib/model-stats";
 import type { ProjectMetadata, SceneMetadata } from "@/lib/projects";
 import { loadGltfModel } from "@/lib/three-gltf";
 
@@ -60,20 +61,24 @@ type TrackingProviderId = "mindar-image" | "webxr-world" | "arkit-ios" | "commer
 
 type ARStabilityConfig = {
   label: string;
-  positionDeadzoneM: number;
+  positionDeadzoneWorldUnits: number;
   rotationDeadzoneRad: number;
   scaleDeadzone: number;
   minAlphaAt60Fps: number;
   maxAlphaAt60Fps: number;
-  positionCatchupM: number;
+  positionCatchupWorldUnits: number;
   rotationCatchupRad: number;
   scaleCatchup: number;
   pixelRatioMax: number;
-  lostPoseGraceMs: number;
-  lockStableAfterMs: number;
-  lockReleasePositionM: number;
+  shortHoldMs: number;
+  extendedHoldMs: number;
+  lockAcquireStableMs: number;
+  lockAcquirePositionThresholdNormalized: number;
+  lockReleaseStableMs: number;
+  lockReleasePositionThresholdNormalized: number;
   lockReleaseRotationRad: number;
   lockReleaseScale: number;
+  relockBlendMs: number;
 };
 
 type TrackingProviderSupport = {
@@ -146,75 +151,93 @@ const DEFAULT_TRACKING_MODE: ARTrackingMode = "auto";
 
 const AR_STABILITY_MODES: ARStabilityMode[] = ["realtime", "balanced", "stable", "presentation-lock"];
 const AR_TRACKING_MODES: ARTrackingMode[] = ["auto", "mindar-image", "webxr-world", "arkit-ios"];
+const LOCK_CANDIDATE_ALPHA_AT_60_FPS = 0.18;
+const LOCK_MIN_STABLE_SAMPLES = 8;
 
 const AR_STABILITY_CONFIGS: Record<ARStabilityMode, ARStabilityConfig> = {
   realtime: {
     label: "Realtime",
-    positionDeadzoneM: 0.0003,
+    positionDeadzoneWorldUnits: 0.0003,
     rotationDeadzoneRad: THREE.MathUtils.degToRad(0.08),
     scaleDeadzone: 0.0006,
     minAlphaAt60Fps: 0.65,
     maxAlphaAt60Fps: 0.98,
-    positionCatchupM: 0.025,
+    positionCatchupWorldUnits: 0.025,
     rotationCatchupRad: THREE.MathUtils.degToRad(5),
     scaleCatchup: 0.02,
     pixelRatioMax: 2,
-    lostPoseGraceMs: 0,
-    lockStableAfterMs: 0,
-    lockReleasePositionM: 0.02,
+    shortHoldMs: 0,
+    extendedHoldMs: 0,
+    lockAcquireStableMs: 0,
+    lockAcquirePositionThresholdNormalized: 0.02,
+    lockReleaseStableMs: 0,
+    lockReleasePositionThresholdNormalized: 0.04,
     lockReleaseRotationRad: THREE.MathUtils.degToRad(4),
-    lockReleaseScale: 0.02
+    lockReleaseScale: 0.02,
+    relockBlendMs: 0
   },
   balanced: {
     label: "Balanced",
-    positionDeadzoneM: 0.0012,
+    positionDeadzoneWorldUnits: 0.0012,
     rotationDeadzoneRad: THREE.MathUtils.degToRad(0.25),
     scaleDeadzone: 0.0015,
     minAlphaAt60Fps: 0.18,
     maxAlphaAt60Fps: 0.76,
-    positionCatchupM: 0.035,
+    positionCatchupWorldUnits: 0.035,
     rotationCatchupRad: THREE.MathUtils.degToRad(7),
     scaleCatchup: 0.03,
     pixelRatioMax: 2,
-    lostPoseGraceMs: 0,
-    lockStableAfterMs: 0,
-    lockReleasePositionM: 0.03,
+    shortHoldMs: 0,
+    extendedHoldMs: 0,
+    lockAcquireStableMs: 0,
+    lockAcquirePositionThresholdNormalized: 0.03,
+    lockReleaseStableMs: 0,
+    lockReleasePositionThresholdNormalized: 0.06,
     lockReleaseRotationRad: THREE.MathUtils.degToRad(6),
-    lockReleaseScale: 0.03
+    lockReleaseScale: 0.03,
+    relockBlendMs: 0
   },
   stable: {
     label: "Stable",
-    positionDeadzoneM: 0.0025,
+    positionDeadzoneWorldUnits: 0.0025,
     rotationDeadzoneRad: THREE.MathUtils.degToRad(0.55),
     scaleDeadzone: 0.0025,
     minAlphaAt60Fps: 0.08,
     maxAlphaAt60Fps: 0.55,
-    positionCatchupM: 0.05,
+    positionCatchupWorldUnits: 0.05,
     rotationCatchupRad: THREE.MathUtils.degToRad(10),
     scaleCatchup: 0.04,
     pixelRatioMax: 1.5,
-    lostPoseGraceMs: 0,
-    lockStableAfterMs: 0,
-    lockReleasePositionM: 0.04,
+    shortHoldMs: 0,
+    extendedHoldMs: 0,
+    lockAcquireStableMs: 0,
+    lockAcquirePositionThresholdNormalized: 0.04,
+    lockReleaseStableMs: 0,
+    lockReleasePositionThresholdNormalized: 0.08,
     lockReleaseRotationRad: THREE.MathUtils.degToRad(8),
-    lockReleaseScale: 0.04
+    lockReleaseScale: 0.04,
+    relockBlendMs: 0
   },
   "presentation-lock": {
     label: "Presentation Lock",
-    positionDeadzoneM: 0.003,
+    positionDeadzoneWorldUnits: 0.003,
     rotationDeadzoneRad: THREE.MathUtils.degToRad(0.65),
     scaleDeadzone: 0.003,
     minAlphaAt60Fps: 0.06,
     maxAlphaAt60Fps: 0.42,
-    positionCatchupM: 0.055,
+    positionCatchupWorldUnits: 0.055,
     rotationCatchupRad: THREE.MathUtils.degToRad(10),
     scaleCatchup: 0.045,
     pixelRatioMax: 1.5,
-    lostPoseGraceMs: 1400,
-    lockStableAfterMs: 650,
-    lockReleasePositionM: 0.045,
+    shortHoldMs: 3000,
+    extendedHoldMs: 8000,
+    lockAcquireStableMs: 700,
+    lockAcquirePositionThresholdNormalized: 0.08,
+    lockReleaseStableMs: 500,
+    lockReleasePositionThresholdNormalized: 0.18,
     lockReleaseRotationRad: THREE.MathUtils.degToRad(8),
-    lockReleaseScale: 0.045
+    lockReleaseScale: 0.045,
+    relockBlendMs: 750
   }
 };
 
@@ -260,6 +283,9 @@ type PublicStatus =
   | "target searching"
   | "target found"
   | "target lost"
+  | "target lost - holding position"
+  | "target lost - move camera back to target"
+  | "target re-aligning"
   | "loading model"
   | "model loaded"
   | "model error";
@@ -281,6 +307,17 @@ type BoundsDebug = {
   max: VectorDebug;
   size: VectorDebug;
   valid: boolean;
+};
+
+type ResizeDebugState = {
+  canvasResizeCount: number;
+  rendererSetSizeCount: number;
+  arSceneRemountCount: number;
+  lastResizeReason: string;
+  lastRendererSize: {
+    width: number;
+    height: number;
+  };
 };
 
 type RuntimeStatus = {
@@ -403,6 +440,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
   const mountRef = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const arSceneRemountCountRef = useRef(0);
   const liveDebugRef = useRef<Record<string, unknown>>({});
   const debugEnabledRef = useRef(debug);
   const [stabilityMode, setStabilityMode] = useState<ARStabilityMode>(readInitialStabilityMode);
@@ -607,9 +645,27 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     let activeModel: THREE.Object3D | null = null;
     let activeCorrectionMetrics: ModelCorrectionMetrics | null = null;
     let targetVisible = false;
+    let lastPublicStatus: PublicStatus | "" = "";
+    arSceneRemountCountRef.current += 1;
+    const resizeDebug: ResizeDebugState = {
+      canvasResizeCount: 0,
+      rendererSetSizeCount: 0,
+      arSceneRemountCount: arSceneRemountCountRef.current,
+      lastResizeReason: "runtime-start",
+      lastRendererSize: {
+        width: 0,
+        height: 0
+      }
+    };
+
+    const updatePublicStatus = (nextStatus: PublicStatus) => {
+      if (lastPublicStatus === nextStatus) return;
+      lastPublicStatus = nextStatus;
+      setPublicStatus(nextStatus);
+    };
 
     async function start() {
-      setPublicStatus("camera loading");
+      updatePublicStatus("camera loading");
       const deviceProfile = detectDeviceProfile();
       patchRuntimeStatus({
         cameraActive: false,
@@ -690,10 +746,13 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
         renderer.toneMappingExposure = 1.2;
         Object.assign(renderer.domElement.style, {
-          position: "absolute",
+          position: "fixed",
           inset: "0",
+          width: "100vw",
+          height: "100vh",
           zIndex: "1",
-          pointerEvents: "none"
+          pointerEvents: "none",
+          display: "block"
         });
         mount.appendChild(renderer.domElement);
 
@@ -766,12 +825,18 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           stabilizedRoot.visible = true;
         });
         const unsubscribeFound = trackingProvider.onTargetFound(() => {
+          const now = performance.now();
           targetVisible = true;
-          setPublicStatus("target found");
+          updatePublicStatus(
+            poseStabilizer.isHoldingPoseAfterLoss(now, stabilityModeRef.current)
+              ? "target re-aligning"
+              : "target found"
+          );
           patchRuntimeStatus({ targetFound: true, targetLost: false });
         });
         const unsubscribeLost = trackingProvider.onTargetLost(() => {
-          const holdingPose = poseStabilizer.markTargetLost(performance.now(), stabilityModeRef.current);
+          const now = performance.now();
+          const holdingPose = poseStabilizer.markTargetLost(now, stabilityModeRef.current);
 
           if (!holdingPose) {
             targetAnchor.matrix.copy(INVISIBLE_MATRIX);
@@ -781,21 +846,27 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
 
           if (targetVisible) {
             targetVisible = false;
-            setPublicStatus("target lost");
+            updatePublicStatus(
+              holdingPose
+                ? poseStabilizer.getLossPublicStatus(now, stabilityModeRef.current)
+                : "target lost"
+            );
             patchRuntimeStatus({ targetFound: false, targetLost: true });
           } else {
-            setPublicStatus("target searching");
+            updatePublicStatus("target searching");
           }
         });
 
         resizeTrackingView({
-          container: mount,
           video,
           renderer,
           camera,
-          provider: trackingProvider
+          provider: trackingProvider,
+          resizeDebug,
+          reason: "startup"
         });
-        window.addEventListener("resize", resize);
+        window.addEventListener("resize", handleWindowResize);
+        window.addEventListener("orientationchange", handleOrientationChange);
 
         patchRuntimeStatus({
           trackingMode: trackingProvider.label,
@@ -807,15 +878,30 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           deviceProfile,
           mindARInitialized: trackingProvider.id === "mindar-image"
         });
-        setPublicStatus("target searching");
+        updatePublicStatus("target searching");
 
-        function resize() {
+        function resize(reason: string) {
           if (!mount || !video || !renderer || !trackingProvider) return;
-          resizeTrackingView({ container: mount, video, renderer, camera, provider: trackingProvider });
+          resizeTrackingView({
+            video,
+            renderer,
+            camera,
+            provider: trackingProvider,
+            resizeDebug,
+            reason
+          });
+        }
+
+        function handleWindowResize() {
+          resize("window-resize");
+        }
+
+        function handleOrientationChange() {
+          resize("orientation-change");
         }
 
         async function loadActiveModel() {
-          setPublicStatus("loading model");
+          updatePublicStatus("loading model");
           patchRuntimeStatus({
             modelLoading: true,
             modelLoaded: false,
@@ -890,10 +976,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
               lastError: runtimeTransform.metrics.scaleFallbackReason || ""
             });
 
-            setPublicStatus(targetVisible ? "target found" : "target searching");
+            updatePublicStatus(targetVisible ? "target found" : "target searching");
           } catch (caught) {
             const errorMessage = caught instanceof Error ? caught.message : "model load failed";
-            setPublicStatus("model error");
+            updatePublicStatus("model error");
             patchRuntimeStatus({
               modelLoading: false,
               modelLoaded: false,
@@ -913,6 +999,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
             mode: stabilityModeRef.current,
             now
           });
+          const posePublicStatus = poseStabilizer.getPosePublicStatus(now, stabilityModeRef.current);
+          if (posePublicStatus) {
+            updatePublicStatus(posePublicStatus);
+          }
           renderer.render(threeScene, camera);
 
           if (video && now - lastDebugSnapshotAtMs >= 250) {
@@ -935,6 +1025,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
               deviceProfile,
               poseStabilizer,
               frameRateTracker,
+              resizeDebug,
               now
             });
             liveDebugRef.current = snapshot;
@@ -948,7 +1039,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         cleanupRef.current = () => {
           stopped = true;
           window.cancelAnimationFrame(animationFrame);
-          window.removeEventListener("resize", resize);
+          window.removeEventListener("resize", handleWindowResize);
+          window.removeEventListener("orientationchange", handleOrientationChange);
           unsubscribePose();
           unsubscribeFound();
           unsubscribeLost();
@@ -989,13 +1081,13 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         nextStatus.mindARInitialized = false;
       }
 
-      setPublicStatus("model error");
+      updatePublicStatus("model error");
       patchRuntimeStatus(nextStatus);
     }
 
     start().catch((caught) => {
       const errorMessage = caught instanceof Error ? caught.message : "Tracking runtime error.";
-      setPublicStatus("model error");
+      updatePublicStatus("model error");
       patchRuntimeStatus({
         modelLoading: false,
         modelLoaded: false,
@@ -1015,11 +1107,13 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
 
   return (
     <main className="fixed inset-0 overflow-hidden bg-black text-white">
-      <div ref={mountRef} className="absolute inset-0" />
+      <div ref={mountRef} className="fixed inset-0 overflow-hidden [contain:layout_size_paint]" />
 
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 p-3">
-        <p className="inline-block rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold uppercase tracking-[0.08em] backdrop-blur">
+      <div className="pointer-events-none fixed inset-x-0 top-0 z-10 flex items-start justify-between gap-2 p-3">
+        <p className="flex h-8 w-[min(20rem,calc(100vw-1.5rem))] shrink-0 items-center rounded bg-black/60 px-2.5 text-xs font-semibold uppercase tracking-[0.08em] backdrop-blur">
+          <span className="truncate">
           {publicStatus}
+          </span>
         </p>
         <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
           {advancedControlsVisible ? (
@@ -1083,7 +1177,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       </div>
 
       {showFallbackViewer ? (
-        <div className="absolute inset-x-0 bottom-0 z-10 p-3">
+        <div className="fixed inset-x-0 bottom-0 z-10 p-3">
           <Link
             className="focus-ring inline-flex rounded bg-white px-3 py-2 text-sm font-semibold text-black"
             href={project?.viewUrl || "#"}
@@ -1094,7 +1188,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       ) : null}
 
       {debug ? (
-        <div className="absolute inset-x-0 bottom-0 z-20 max-h-[60vh] overflow-auto bg-black/80 p-3 backdrop-blur">
+        <div className="fixed inset-x-0 bottom-0 z-20 max-h-[60vh] overflow-auto bg-black/80 p-3 backdrop-blur">
           <div className="mb-3 flex flex-wrap gap-2">
             <Link className="focus-ring rounded bg-white/15 px-3 py-2 text-xs font-semibold hover:bg-white/25" href="/">
               Home
@@ -1148,11 +1242,13 @@ async function startVideo(container: HTMLElement) {
   video.playsInline = true;
   video.setAttribute("playsinline", "true");
   Object.assign(video.style, {
-    position: "absolute",
-    top: "0",
-    left: "0",
+    position: "fixed",
+    inset: "0",
+    width: "100vw",
+    height: "100vh",
     zIndex: "0",
-    objectFit: "cover"
+    objectFit: "cover",
+    pointerEvents: "none"
   });
   container.appendChild(video);
 
@@ -1802,24 +1898,41 @@ class PoseStabilizer {
   private lastRawAtMs = 0;
   private lastFoundAtMs = 0;
   private lastLostAtMs = 0;
+  private hasLastKnownGoodPose = false;
+  private lastKnownGoodAtMs = 0;
+  private lastKnownGoodPosition = new THREE.Vector3();
+  private lastKnownGoodQuaternion = new THREE.Quaternion();
+  private lastKnownGoodScale = new THREE.Vector3(1, 1, 1);
   private targetFoundEvents = 0;
   private targetLostEvents = 0;
-  private positionJitterDeltaM = 0;
+  private positionJitterDeltaWorldUnits = 0;
+  private positionJitterDeltaNormalized = 0;
   private rotationJitterDeltaRad = 0;
   private scaleJitterDelta = 0;
-  private rawToSmoothedPositionDeltaM = 0;
+  private rawToSmoothedPositionDeltaWorldUnits = 0;
+  private rawToSmoothedPositionDeltaNormalized = 0;
   private rawToSmoothedRotationDeltaRad = 0;
   private rawToSmoothedScaleDelta = 0;
+  private positionNormalizationWorldUnits = 1;
   private smoothingAlpha = 0;
   private positionAlpha = 0;
   private rotationAlpha = 0;
   private scaleAlpha = 0;
   private poseLocked = false;
+  private holdingPoseAfterLossActive = false;
   private stableSinceMs = 0;
-  private holdPoseUntilMs = 0;
+  private stableSampleCount = 0;
+  private releaseCandidateSinceMs = 0;
+  private relockStartedAtMs = 0;
   private lockedPosition = new THREE.Vector3();
   private lockedQuaternion = new THREE.Quaternion();
   private lockedScale = new THREE.Vector3(1, 1, 1);
+  private lockCandidatePosition = new THREE.Vector3();
+  private lockCandidateQuaternion = new THREE.Quaternion();
+  private lockCandidateScale = new THREE.Vector3(1, 1, 1);
+  private hasLockCandidatePose = false;
+  private lastLockCandidateAtMs = 0;
+  private lockStateReason = "not-acquired";
 
   setRawMatrix(matrix: THREE.Matrix4, now: number) {
     if (!isUsableMatrix(matrix)) return false;
@@ -1832,30 +1945,36 @@ class PoseStabilizer {
     if (!isFiniteVector(nextPosition) || !isFiniteQuaternion(nextQuaternion) || !isFiniteVector(nextScale)) {
       return false;
     }
+    nextQuaternion.normalize();
 
     if (this.hasRawPose) {
-      this.positionJitterDeltaM = this.rawPosition.distanceTo(nextPosition);
-      this.rotationJitterDeltaRad = this.rawQuaternion.angleTo(nextQuaternion);
+      this.positionJitterDeltaWorldUnits = this.rawPosition.distanceTo(nextPosition);
+      this.rotationJitterDeltaRad = quaternionAngularDeltaRad(this.rawQuaternion, nextQuaternion);
       this.scaleJitterDelta = scaleDelta(this.rawScale, nextScale);
     } else {
-      this.positionJitterDeltaM = 0;
+      this.positionJitterDeltaWorldUnits = 0;
       this.rotationJitterDeltaRad = 0;
       this.scaleJitterDelta = 0;
     }
 
-    const wasHoldingPose = !this.targetVisible && this.hasSmoothedPose && now <= this.holdPoseUntilMs;
+    const wasHoldingPose = this.holdingPoseAfterLossActive;
 
     if (!this.targetVisible) {
       this.targetFoundEvents += 1;
       this.lastFoundAtMs = now;
       if (!wasHoldingPose) {
         this.hasSmoothedPose = false;
+        this.resetPresentationLockState("target-found-without-held-pose", true);
+        this.relockStartedAtMs = 0;
+      } else {
         this.poseLocked = false;
-        this.stableSinceMs = 0;
+        this.relockStartedAtMs = now;
+        this.resetLockAcquisition("relocking-from-held-pose");
       }
       this.lastUpdateAtMs = 0;
     }
 
+    this.holdingPoseAfterLossActive = false;
     this.targetVisible = true;
     this.hasRawPose = true;
     this.lastRawAtMs = now;
@@ -1863,6 +1982,8 @@ class PoseStabilizer {
     this.rawPosition.copy(nextPosition);
     this.rawQuaternion.copy(nextQuaternion);
     this.rawScale.copy(nextScale);
+    this.updatePositionNormalizationFactor();
+    this.positionJitterDeltaNormalized = this.normalizePositionDelta(this.positionJitterDeltaWorldUnits);
 
     if (!this.hasSmoothedPose) {
       this.smoothedPosition.copy(this.rawPosition);
@@ -1875,6 +1996,7 @@ class PoseStabilizer {
       this.rotationAlpha = 1;
       this.scaleAlpha = 1;
       this.updateRawToSmoothedDeltas();
+      this.rememberLastKnownGoodPose(now);
     }
 
     return true;
@@ -1888,26 +2010,89 @@ class PoseStabilizer {
     }
 
     this.targetVisible = false;
+    this.holdingPoseAfterLossActive = false;
     this.lastUpdateAtMs = 0;
     this.smoothingAlpha = 0;
     this.positionAlpha = 0;
     this.rotationAlpha = 0;
     this.scaleAlpha = 0;
+    this.relockStartedAtMs = 0;
 
-    const shouldHoldPose = mode === "presentation-lock" && this.hasSmoothedPose && config.lostPoseGraceMs > 0;
+    const shouldHoldPose =
+      mode === "presentation-lock" &&
+      config.extendedHoldMs > 0 &&
+      (this.hasLastKnownGoodPose || this.hasSmoothedPose);
     if (shouldHoldPose) {
-      this.lockedPosition.copy(this.smoothedPosition);
-      this.lockedQuaternion.copy(this.smoothedQuaternion);
-      this.lockedScale.copy(this.smoothedScale);
-      this.holdPoseUntilMs = now + config.lostPoseGraceMs;
+      if (this.hasLastKnownGoodPose) {
+        this.lockedPosition.copy(this.lastKnownGoodPosition);
+        this.lockedQuaternion.copy(this.lastKnownGoodQuaternion);
+        this.lockedScale.copy(this.lastKnownGoodScale);
+      } else {
+        this.lockedPosition.copy(this.smoothedPosition);
+        this.lockedQuaternion.copy(this.smoothedQuaternion);
+        this.lockedScale.copy(this.smoothedScale);
+        this.hasLastKnownGoodPose = true;
+        this.lastKnownGoodAtMs = now;
+        this.lastKnownGoodPosition.copy(this.smoothedPosition);
+        this.lastKnownGoodQuaternion.copy(this.smoothedQuaternion);
+        this.lastKnownGoodScale.copy(this.smoothedScale);
+      }
+      this.smoothedPosition.copy(this.lockedPosition);
+      this.smoothedQuaternion.copy(this.lockedQuaternion);
+      this.smoothedScale.copy(this.lockedScale);
+      this.smoothedMatrix.compose(
+        this.smoothedPosition,
+        this.smoothedQuaternion,
+        this.smoothedScale
+      );
+      this.hasSmoothedPose = true;
+      this.poseLocked = true;
+      this.holdingPoseAfterLossActive = true;
+      this.resetLockAcquisition("holding-last-known-pose");
+      this.lockStateReason = "holding-last-known-pose";
       return true;
     }
 
     this.hasSmoothedPose = false;
-    this.poseLocked = false;
-    this.stableSinceMs = 0;
-    this.holdPoseUntilMs = 0;
+    this.resetPresentationLockState("target-lost-no-hold", true);
     return false;
+  }
+
+  isHoldingPoseAfterLoss(now: number, mode: ARStabilityMode) {
+    void now;
+    return (
+      mode === "presentation-lock" &&
+      this.holdingPoseAfterLossActive &&
+      !this.targetVisible &&
+      this.hasSmoothedPose &&
+      this.hasLastKnownGoodPose &&
+      this.lastLostAtMs > 0
+    );
+  }
+
+  getLossPublicStatus(now: number, mode: ARStabilityMode): PublicStatus {
+    const config = getStabilityConfig(mode);
+    if (!this.isHoldingPoseAfterLoss(now, mode)) {
+      return "target lost";
+    }
+
+    return this.holdPoseAgeMs(now) >= config.extendedHoldMs
+      ? "target lost - move camera back to target"
+      : "target lost - holding position";
+  }
+
+  getPosePublicStatus(now: number, mode: ARStabilityMode): PublicStatus | null {
+    const config = getStabilityConfig(mode);
+
+    if (this.targetVisible) {
+      return this.isRelocking(now, config) ? "target re-aligning" : "target found";
+    }
+
+    if (this.isHoldingPoseAfterLoss(now, mode)) {
+      return this.getLossPublicStatus(now, mode);
+    }
+
+    return null;
   }
 
   applyToRoot({
@@ -1921,11 +2106,7 @@ class PoseStabilizer {
     mode: ARStabilityMode;
     now: number;
   }) {
-    const holdingAfterLoss =
-      mode === "presentation-lock" &&
-      !this.targetVisible &&
-      this.hasSmoothedPose &&
-      now <= this.holdPoseUntilMs;
+    const holdingAfterLoss = this.isHoldingPoseAfterLoss(now, mode);
 
     if ((!this.targetVisible && !holdingAfterLoss) || !this.hasRawPose || !this.hasSmoothedPose) {
       stabilizedRoot.visible = false;
@@ -1937,9 +2118,13 @@ class PoseStabilizer {
       ? THREE.MathUtils.clamp(now - this.lastUpdateAtMs, 1, 80)
       : 1000 / 60;
     this.lastUpdateAtMs = now;
+    this.updatePositionNormalizationFactor();
     this.updateRawToSmoothedDeltas();
 
-    const alphaAt60Fps = holdingAfterLoss ? 0 : this.adaptiveAlphaAt60Fps(config);
+    const adaptiveAlphaAt60Fps = holdingAfterLoss ? 0 : this.adaptiveAlphaAt60Fps(config);
+    const alphaAt60Fps = this.isRelocking(now, config)
+      ? Math.min(adaptiveAlphaAt60Fps, relockAlphaAt60Fps(config.relockBlendMs))
+      : adaptiveAlphaAt60Fps;
     const frameScale = dtMs / (1000 / 60);
     const frameAlpha = 1 - Math.pow(1 - alphaAt60Fps, frameScale);
     this.smoothingAlpha = THREE.MathUtils.clamp(frameAlpha, 0, 1);
@@ -1953,7 +2138,7 @@ class PoseStabilizer {
       this.positionAlpha = 0;
       this.rotationAlpha = 0;
       this.scaleAlpha = 0;
-    } else if (this.rawToSmoothedPositionDeltaM > config.positionDeadzoneM) {
+    } else if (this.rawToSmoothedPositionDeltaWorldUnits > config.positionDeadzoneWorldUnits) {
       this.smoothedPosition.lerp(this.rawPosition, this.smoothingAlpha);
       this.positionAlpha = this.smoothingAlpha;
     } else {
@@ -1981,6 +2166,9 @@ class PoseStabilizer {
       this.smoothedScale
     );
     this.updateRawToSmoothedDeltas();
+    if (this.relockStartedAtMs && !this.isRelocking(now, config)) {
+      this.relockStartedAtMs = 0;
+    }
 
     targetAnchor.updateMatrixWorld(true);
     this.rawWorldInverse.copy(targetAnchor.matrixWorld).invert();
@@ -1995,27 +2183,78 @@ class PoseStabilizer {
     stabilizedRoot.matrixWorldNeedsUpdate = true;
     stabilizedRoot.visible = true;
     stabilizedRoot.updateMatrixWorld(true);
+
+    if (this.targetVisible) {
+      this.rememberLastKnownGoodPose(now);
+    }
   }
 
   debug(now: number, mode: ARStabilityMode) {
     const config = getStabilityConfig(mode);
+    this.updatePositionNormalizationFactor();
+    this.updateRawToSmoothedDeltas();
+    const rawRotation = new THREE.Euler().setFromQuaternion(this.rawQuaternion, "XYZ");
+    const smoothedRotation = new THREE.Euler().setFromQuaternion(this.smoothedQuaternion, "XYZ");
 
     return {
       currentStabilityMode: config.label,
       currentStabilityModeKey: mode,
+      posePositionUnits: "Three.js / MindAR world units; not physical meters.",
+      posePositionNormalizedUnits: "Position deltas normalized by max(raw distance from camera, pose scale, 1).",
       targetVisible: this.targetVisible,
       hasRawPose: this.hasRawPose,
+      hasSmoothedPose: this.hasSmoothedPose,
       presentationLocked: this.poseLocked,
-      holdingPoseAfterLoss: this.hasSmoothedPose && !this.targetVisible && now <= this.holdPoseUntilMs,
-      holdPoseRemainingMs: this.holdPoseUntilMs > now ? roundForDebug(this.holdPoseUntilMs - now) : 0,
+      presentationLockState: this.lockStateReason,
+      lockedPresentationPose: this.poseLocked
+        ? transformDebugFromParts(this.lockedPosition, this.lockedQuaternion, this.lockedScale)
+        : null,
+      holdingPoseAfterLoss: this.isHoldingPoseAfterLoss(now, mode),
+      holdPoseAgeMs: this.isHoldingPoseAfterLoss(now, mode) ? roundForDebug(this.holdPoseAgeMs(now)) : 0,
+      shortHoldMs: config.shortHoldMs,
+      extendedHoldMs: config.extendedHoldMs,
+      relockingTarget: this.isRelocking(now, config),
+      relockAgeMs: this.relockStartedAtMs ? roundForDebug(now - this.relockStartedAtMs) : 0,
+      relockBlendMs: config.relockBlendMs,
+      lockAcquireStableMs: config.lockAcquireStableMs,
+      lockStableForMs: this.stableSinceMs ? roundForDebug(now - this.stableSinceMs) : 0,
+      lockStableSampleCount: this.stableSampleCount,
+      lockReleaseStableMs: config.lockReleaseStableMs,
+      lockReleaseCandidateForMs: this.releaseCandidateSinceMs
+        ? roundForDebug(now - this.releaseCandidateSinceMs)
+        : 0,
+      lockCandidatePose: this.hasLockCandidatePose
+        ? transformDebugFromParts(
+            this.lockCandidatePosition,
+            this.lockCandidateQuaternion,
+            this.lockCandidateScale
+          )
+        : null,
+      lastKnownGoodPose: this.hasLastKnownGoodPose
+        ? transformDebugFromParts(
+            this.lastKnownGoodPosition,
+            this.lastKnownGoodQuaternion,
+            this.lastKnownGoodScale
+          )
+        : null,
+      lastKnownGoodPoseAgeMs: this.lastKnownGoodAtMs
+        ? roundForDebug(now - this.lastKnownGoodAtMs)
+        : null,
       rawTargetPose: this.hasRawPose ? transformDebugFromMatrix(this.rawMatrix) : null,
       smoothedTargetPose: this.hasSmoothedPose
         ? transformDebugFromParts(this.smoothedPosition, this.smoothedQuaternion, this.smoothedScale)
         : null,
-      positionJitterDeltaM: roundForDebug(this.positionJitterDeltaM),
+      rawRotationEulerDeg: this.hasRawPose ? eulerDegreesDebug(rawRotation) : null,
+      smoothedRotationEulerDeg: this.hasSmoothedPose ? eulerDegreesDebug(smoothedRotation) : null,
+      rawQuaternion: this.hasRawPose ? quaternionDebug(this.rawQuaternion) : null,
+      smoothedQuaternion: this.hasSmoothedPose ? quaternionDebug(this.smoothedQuaternion) : null,
+      positionNormalizationWorldUnits: roundForDebug(this.positionNormalizationWorldUnits),
+      positionJitterDeltaWorldUnits: roundForDebug(this.positionJitterDeltaWorldUnits),
+      positionJitterDeltaNormalized: roundForDebug(this.positionJitterDeltaNormalized),
       rotationJitterDeltaDeg: roundForDebug(THREE.MathUtils.radToDeg(this.rotationJitterDeltaRad)),
       scaleJitterDelta: roundForDebug(this.scaleJitterDelta),
-      rawToSmoothedPositionDeltaM: roundForDebug(this.rawToSmoothedPositionDeltaM),
+      rawToSmoothedPositionDeltaWorldUnits: roundForDebug(this.rawToSmoothedPositionDeltaWorldUnits),
+      rawToSmoothedPositionDeltaNormalized: roundForDebug(this.rawToSmoothedPositionDeltaNormalized),
       rawToSmoothedRotationDeltaDeg: roundForDebug(
         THREE.MathUtils.radToDeg(this.rawToSmoothedRotationDeltaRad)
       ),
@@ -2024,11 +2263,16 @@ class PoseStabilizer {
       positionAlpha: roundForDebug(this.positionAlpha),
       rotationAlpha: roundForDebug(this.rotationAlpha),
       scaleAlpha: roundForDebug(this.scaleAlpha),
-      deadzone: {
-        positionM: roundForDebug(config.positionDeadzoneM),
+      thresholds: {
+        positionDeadzoneWorldUnits: roundForDebug(config.positionDeadzoneWorldUnits),
         rotationDeg: roundForDebug(THREE.MathUtils.radToDeg(config.rotationDeadzoneRad)),
         scale: roundForDebug(config.scaleDeadzone),
-        lockReleasePositionM: roundForDebug(config.lockReleasePositionM),
+        lockAcquirePositionThresholdNormalized: roundForDebug(
+          config.lockAcquirePositionThresholdNormalized
+        ),
+        lockReleasePositionThresholdNormalized: roundForDebug(
+          config.lockReleasePositionThresholdNormalized
+        ),
         lockReleaseRotationDeg: roundForDebug(THREE.MathUtils.radToDeg(config.lockReleaseRotationRad)),
         lockReleaseScale: roundForDebug(config.lockReleaseScale)
       },
@@ -2046,9 +2290,9 @@ class PoseStabilizer {
 
   private adaptiveAlphaAt60Fps(config: ARStabilityConfig) {
     const positionMotion = normalizedMotion(
-      Math.max(this.rawToSmoothedPositionDeltaM, this.positionJitterDeltaM),
-      config.positionDeadzoneM,
-      config.positionCatchupM
+      Math.max(this.rawToSmoothedPositionDeltaWorldUnits, this.positionJitterDeltaWorldUnits),
+      config.positionDeadzoneWorldUnits,
+      config.positionCatchupWorldUnits
     );
     const rotationMotion = normalizedMotion(
       Math.max(this.rawToSmoothedRotationDeltaRad, this.rotationJitterDeltaRad),
@@ -2066,55 +2310,215 @@ class PoseStabilizer {
   }
 
   private updateRawToSmoothedDeltas() {
-    this.rawToSmoothedPositionDeltaM = this.smoothedPosition.distanceTo(this.rawPosition);
-    this.rawToSmoothedRotationDeltaRad = this.smoothedQuaternion.angleTo(this.rawQuaternion);
+    this.rawToSmoothedPositionDeltaWorldUnits = this.smoothedPosition.distanceTo(this.rawPosition);
+    this.rawToSmoothedPositionDeltaNormalized = this.normalizePositionDelta(
+      this.rawToSmoothedPositionDeltaWorldUnits
+    );
+    this.rawToSmoothedRotationDeltaRad = quaternionAngularDeltaRad(
+      this.smoothedQuaternion,
+      this.rawQuaternion
+    );
     this.rawToSmoothedScaleDelta = scaleDelta(this.smoothedScale, this.rawScale);
   }
 
   private updatePresentationLockState(config: ARStabilityConfig, mode: ARStabilityMode, now: number) {
-    if (mode !== "presentation-lock" || !this.targetVisible) {
-      this.poseLocked = false;
-      this.stableSinceMs = 0;
+    if (mode !== "presentation-lock") {
+      this.resetPresentationLockState("mode-not-presentation-lock", true);
       return;
     }
 
-    const stableNow =
-      this.positionJitterDeltaM <= config.positionDeadzoneM &&
-      this.rotationJitterDeltaRad <= config.rotationDeadzoneRad &&
-      this.scaleJitterDelta <= config.scaleDeadzone &&
-      this.rawToSmoothedPositionDeltaM <= config.positionDeadzoneM * 2 &&
-      this.rawToSmoothedRotationDeltaRad <= config.rotationDeadzoneRad * 2 &&
-      this.rawToSmoothedScaleDelta <= config.scaleDeadzone * 2;
-
-    if (!stableNow) {
-      this.stableSinceMs = 0;
-    } else if (!this.stableSinceMs) {
-      this.stableSinceMs = now;
+    if (!this.targetVisible) {
+      this.resetLockAcquisition("target-not-visible");
+      return;
     }
 
+    const acquireRotationThreshold = Math.max(
+      config.rotationDeadzoneRad * 4,
+      config.lockReleaseRotationRad * 0.75
+    );
+    const acquireScaleThreshold = Math.max(config.scaleDeadzone * 4, config.lockReleaseScale * 0.75);
+    const stableRawMotion =
+      this.positionJitterDeltaNormalized <= config.lockAcquirePositionThresholdNormalized &&
+      this.rotationJitterDeltaRad <= acquireRotationThreshold &&
+      this.scaleJitterDelta <= acquireScaleThreshold;
+
+    const rawToLockedPositionDeltaNormalized = this.normalizePositionDelta(
+      this.rawPosition.distanceTo(this.lockedPosition)
+    );
     const realMovementDetected =
-      this.rawToSmoothedPositionDeltaM > config.lockReleasePositionM ||
-      this.rawToSmoothedRotationDeltaRad > config.lockReleaseRotationRad ||
-      this.rawToSmoothedScaleDelta > config.lockReleaseScale;
+      rawToLockedPositionDeltaNormalized > config.lockReleasePositionThresholdNormalized ||
+      quaternionAngularDeltaRad(this.rawQuaternion, this.lockedQuaternion) > config.lockReleaseRotationRad ||
+      scaleDelta(this.rawScale, this.lockedScale) > config.lockReleaseScale;
 
     if (this.poseLocked && realMovementDetected) {
-      this.poseLocked = false;
-      this.stableSinceMs = 0;
+      if (!this.releaseCandidateSinceMs) {
+        this.releaseCandidateSinceMs = now;
+      }
+
+      if (now - this.releaseCandidateSinceMs >= config.lockReleaseStableMs) {
+        this.poseLocked = false;
+        this.resetLockAcquisition("released-after-sustained-movement");
+        this.releaseCandidateSinceMs = 0;
+        this.relockStartedAtMs = now;
+      }
       return;
     }
 
-    if (!this.poseLocked && this.stableSinceMs && now - this.stableSinceMs >= config.lockStableAfterMs) {
-      this.poseLocked = true;
-      this.lockedPosition.copy(this.smoothedPosition);
-      this.lockedQuaternion.copy(this.smoothedQuaternion);
-      this.lockedScale.copy(this.smoothedScale);
+    this.releaseCandidateSinceMs = 0;
+
+    if (this.poseLocked) {
+      this.lockStateReason = "locked";
+      return;
     }
+
+    if (!stableRawMotion) {
+      this.resetLockAcquisition("raw-pose-not-stable");
+      return;
+    }
+
+    this.updateLockCandidatePose(now);
+
+    const rawToCandidatePositionDeltaNormalized = this.normalizePositionDelta(
+      this.rawPosition.distanceTo(this.lockCandidatePosition)
+    );
+    const candidateCloseEnough =
+      rawToCandidatePositionDeltaNormalized <= config.lockReleasePositionThresholdNormalized &&
+      quaternionAngularDeltaRad(this.rawQuaternion, this.lockCandidateQuaternion) <=
+        config.lockReleaseRotationRad &&
+      scaleDelta(this.rawScale, this.lockCandidateScale) <= config.lockReleaseScale;
+
+    if (!candidateCloseEnough) {
+      this.stableSinceMs = 0;
+      this.stableSampleCount = 0;
+      this.lockStateReason = "averaging-candidate-pose";
+      return;
+    }
+
+    if (!this.stableSinceMs) {
+      this.stableSinceMs = now;
+      this.stableSampleCount = 1;
+    } else {
+      this.stableSampleCount += 1;
+    }
+
+    if (
+      this.stableSinceMs &&
+      now - this.stableSinceMs >= config.lockAcquireStableMs &&
+      this.stableSampleCount >= LOCK_MIN_STABLE_SAMPLES
+    ) {
+      this.poseLocked = true;
+      this.lockedPosition.copy(this.lockCandidatePosition);
+      this.lockedQuaternion.copy(this.lockCandidateQuaternion);
+      this.lockedScale.copy(this.lockCandidateScale);
+      this.lockStateReason = "locked";
+      this.rememberLastKnownGoodPose(now);
+    }
+  }
+
+  private updateLockCandidatePose(now: number) {
+    if (!this.hasLockCandidatePose) {
+      this.lockCandidatePosition.copy(this.hasSmoothedPose ? this.smoothedPosition : this.rawPosition);
+      this.lockCandidateQuaternion.copy(
+        this.hasSmoothedPose ? this.smoothedQuaternion : this.rawQuaternion
+      );
+      this.lockCandidateScale.copy(this.hasSmoothedPose ? this.smoothedScale : this.rawScale);
+      this.hasLockCandidatePose = true;
+      this.lastLockCandidateAtMs = now;
+      return;
+    }
+
+    const dtMs = this.lastLockCandidateAtMs
+      ? THREE.MathUtils.clamp(now - this.lastLockCandidateAtMs, 1, 120)
+      : 1000 / 60;
+    this.lastLockCandidateAtMs = now;
+    const alpha = frameAlphaFromAlphaAt60Fps(LOCK_CANDIDATE_ALPHA_AT_60_FPS, dtMs);
+    this.lockCandidatePosition.lerp(this.rawPosition, alpha);
+    this.lockCandidateQuaternion.slerp(this.rawQuaternion, alpha);
+    this.lockCandidateQuaternion.normalize();
+    this.lockCandidateScale.lerp(this.rawScale, alpha);
+  }
+
+  private resetLockAcquisition(reason: string) {
+    this.stableSinceMs = 0;
+    this.stableSampleCount = 0;
+    this.releaseCandidateSinceMs = 0;
+    this.hasLockCandidatePose = false;
+    this.lastLockCandidateAtMs = 0;
+    this.lockStateReason = this.poseLocked ? "locked" : reason;
+  }
+
+  private resetPresentationLockState(reason: string, clearLockedPose: boolean) {
+    this.poseLocked = false;
+    this.holdingPoseAfterLossActive = false;
+    this.resetLockAcquisition(reason);
+    if (clearLockedPose) {
+      this.lockedPosition.set(0, 0, 0);
+      this.lockedQuaternion.identity();
+      this.lockedScale.set(1, 1, 1);
+    }
+    this.lockStateReason = reason;
+  }
+
+  private updatePositionNormalizationFactor() {
+    this.positionNormalizationWorldUnits = Math.max(
+      this.rawPosition.length(),
+      this.smoothedPosition.length(),
+      Math.abs(this.rawScale.x),
+      Math.abs(this.rawScale.y),
+      Math.abs(this.rawScale.z),
+      Math.abs(this.smoothedScale.x),
+      Math.abs(this.smoothedScale.y),
+      Math.abs(this.smoothedScale.z),
+      1
+    );
+    this.positionJitterDeltaNormalized = this.normalizePositionDelta(this.positionJitterDeltaWorldUnits);
+  }
+
+  private normalizePositionDelta(deltaWorldUnits: number) {
+    return deltaWorldUnits / Math.max(this.positionNormalizationWorldUnits, 0.000001);
+  }
+
+  private rememberLastKnownGoodPose(now: number) {
+    this.hasLastKnownGoodPose = true;
+    this.lastKnownGoodAtMs = now;
+    this.lastKnownGoodPosition.copy(this.smoothedPosition);
+    this.lastKnownGoodQuaternion.copy(this.smoothedQuaternion);
+    this.lastKnownGoodScale.copy(this.smoothedScale);
+  }
+
+  private holdPoseAgeMs(now: number) {
+    return this.lastLostAtMs ? Math.max(0, now - this.lastLostAtMs) : 0;
+  }
+
+  private isRelocking(now: number, config: ARStabilityConfig) {
+    return (
+      this.targetVisible &&
+      this.relockStartedAtMs > 0 &&
+      config.relockBlendMs > 0 &&
+      now - this.relockStartedAtMs < config.relockBlendMs
+    );
   }
 }
 
 function normalizedMotion(value: number, deadzone: number, catchup: number) {
   const range = Math.max(catchup - deadzone, 0.000001);
   return THREE.MathUtils.clamp((value - deadzone) / range, 0, 1);
+}
+
+function relockAlphaAt60Fps(blendMs: number) {
+  if (blendMs <= 0) return 1;
+  return THREE.MathUtils.clamp(1 - Math.pow(0.08, (1000 / 60) / blendMs), 0.02, 0.22);
+}
+
+function frameAlphaFromAlphaAt60Fps(alphaAt60Fps: number, dtMs: number) {
+  const frameScale = THREE.MathUtils.clamp(dtMs / (1000 / 60), 0.05, 8);
+  return THREE.MathUtils.clamp(1 - Math.pow(1 - alphaAt60Fps, frameScale), 0, 1);
+}
+
+function quaternionAngularDeltaRad(first: THREE.Quaternion, second: THREE.Quaternion) {
+  const firstNormalized = first.clone().normalize();
+  const secondNormalized = second.clone().normalize();
+  return firstNormalized.angleTo(secondNormalized);
 }
 
 function scaleDelta(first: THREE.Vector3, second: THREE.Vector3) {
@@ -2155,32 +2559,35 @@ function createPostMatrix(targetWidth: number, targetHeight: number) {
 }
 
 function resizeTrackingView({
-  container,
   video,
   renderer,
   camera,
-  provider
+  provider,
+  resizeDebug,
+  reason
 }: {
-  container: HTMLElement;
   video: HTMLVideoElement;
   renderer: THREE.WebGLRenderer;
   camera: THREE.PerspectiveCamera;
   provider: TrackingProvider;
+  resizeDebug: ResizeDebugState;
+  reason: string;
 }) {
   video.width = video.videoWidth;
   video.height = video.videoHeight;
   const calibration = provider.getCameraCalibration();
+  const { width: containerWidth, height: containerHeight } = stableLayoutViewportSize();
 
   const videoRatio = video.videoWidth / video.videoHeight;
-  const containerRatio = container.clientWidth / container.clientHeight;
+  const containerRatio = containerWidth / containerHeight;
   let videoDisplayWidth: number;
   let videoDisplayHeight: number;
 
   if (videoRatio > containerRatio) {
-    videoDisplayHeight = container.clientHeight;
+    videoDisplayHeight = containerHeight;
     videoDisplayWidth = videoDisplayHeight * videoRatio;
   } else {
-    videoDisplayWidth = container.clientWidth;
+    videoDisplayWidth = containerWidth;
     videoDisplayHeight = videoDisplayWidth / videoRatio;
   }
 
@@ -2193,9 +2600,9 @@ function resizeTrackingView({
         : video.height / calibration.inputHeight;
     const adjustedVideoHeight =
       inputRatio > containerRatio
-        ? container.clientHeight * inputAdjust
-        : (container.clientWidth / calibration.inputWidth) * calibration.inputHeight * inputAdjust;
-    const fovAdjust = container.clientHeight / adjustedVideoHeight;
+        ? containerHeight * inputAdjust
+        : (containerWidth / calibration.inputWidth) * calibration.inputHeight * inputAdjust;
+    const fovAdjust = containerHeight / adjustedVideoHeight;
     const fov = 2 * Math.atan((1 / projection[5]) * fovAdjust) * (180 / Math.PI);
     const near = projection[14] / (projection[10] - 1);
     const far = projection[14] / (projection[10] + 1);
@@ -2209,21 +2616,46 @@ function resizeTrackingView({
     camera.far = 100;
   }
 
-  camera.aspect = container.clientWidth / container.clientHeight;
+  camera.aspect = containerWidth / containerHeight;
   camera.updateProjectionMatrix();
 
   Object.assign(video.style, {
-    top: `${-(videoDisplayHeight - container.clientHeight) / 2}px`,
-    left: `${-(videoDisplayWidth - container.clientWidth) / 2}px`,
+    position: "fixed",
+    top: `${-(videoDisplayHeight - containerHeight) / 2}px`,
+    left: `${-(videoDisplayWidth - containerWidth) / 2}px`,
     width: `${videoDisplayWidth}px`,
     height: `${videoDisplayHeight}px`
   });
 
   Object.assign(renderer.domElement.style, {
-    width: `${container.clientWidth}px`,
-    height: `${container.clientHeight}px`
+    position: "fixed",
+    inset: "0",
+    width: "100vw",
+    height: "100vh"
   });
-  renderer.setSize(container.clientWidth, container.clientHeight);
+  const currentSize = renderer.getSize(new THREE.Vector2());
+  if (
+    Math.round(currentSize.x) !== containerWidth ||
+    Math.round(currentSize.y) !== containerHeight
+  ) {
+    const previousCanvasWidth = renderer.domElement.width;
+    const previousCanvasHeight = renderer.domElement.height;
+    renderer.setSize(containerWidth, containerHeight, false);
+    resizeDebug.rendererSetSizeCount += 1;
+
+    if (
+      renderer.domElement.width !== previousCanvasWidth ||
+      renderer.domElement.height !== previousCanvasHeight
+    ) {
+      resizeDebug.canvasResizeCount += 1;
+    }
+  }
+
+  resizeDebug.lastResizeReason = reason;
+  resizeDebug.lastRendererSize = {
+    width: containerWidth,
+    height: containerHeight
+  };
 }
 
 function createDebugCube() {
@@ -2305,6 +2737,7 @@ function buildLiveDebugSnapshot({
   deviceProfile,
   poseStabilizer,
   frameRateTracker,
+  resizeDebug,
   now
 }: {
   video: HTMLVideoElement;
@@ -2325,12 +2758,13 @@ function buildLiveDebugSnapshot({
   deviceProfile: DeviceProfile;
   poseStabilizer: PoseStabilizer;
   frameRateTracker: FrameRateTracker;
+  resizeDebug: ResizeDebugState;
   now: number;
 }) {
   const correctedBounds = boundsDebug(modelCorrectionGroup);
   const stabilityConfig = getStabilityConfig(stabilityMode);
   const frameDebug = frameRateTracker.debug();
-  const modelStats = modelStatsDebug(activeModel);
+  const modelStats = collectModelPerformanceStats(activeModel);
   const viewport = viewportDebug();
 
   return {
@@ -2356,6 +2790,11 @@ function buildLiveDebugSnapshot({
       width: viewport.width,
       height: viewport.height
     },
+    canvasResizeCount: resizeDebug.canvasResizeCount,
+    rendererSetSizeCount: resizeDebug.rendererSetSizeCount,
+    arSceneRemountCount: resizeDebug.arSceneRemountCount,
+    lastResizeReason: resizeDebug.lastResizeReason,
+    lastRendererSize: resizeDebug.lastRendererSize,
     videoResolution: {
       width: video.videoWidth,
       height: video.videoHeight
@@ -2390,60 +2829,6 @@ function buildLiveDebugSnapshot({
     correctedBounds,
     longestDimensionAxisAfterTransforms: longestAxisFromDebugBounds(correctedBounds)
   };
-}
-
-function modelStatsDebug(root: THREE.Object3D | null) {
-  if (!root) {
-    return {
-      modelLoaded: false,
-      meshCount: 0,
-      triangleCount: 0,
-      materialCount: 0,
-      textureCount: 0,
-      geometryCount: 0
-    };
-  }
-
-  const materials = new Set<THREE.Material>();
-  const textures = new Set<THREE.Texture>();
-  const geometries = new Set<THREE.BufferGeometry>();
-  let meshCount = 0;
-  let triangleCount = 0;
-
-  root.traverse((child) => {
-    if (!(child instanceof THREE.Mesh) || !child.geometry) return;
-
-    meshCount += 1;
-    geometries.add(child.geometry);
-    const index = child.geometry.getIndex();
-    const position = child.geometry.getAttribute("position");
-    const vertexCount = index?.count || position?.count || 0;
-    triangleCount += Math.floor(vertexCount / 3);
-
-    const childMaterials = Array.isArray(child.material) ? child.material : [child.material];
-    childMaterials.forEach((material) => {
-      if (!material) return;
-      materials.add(material);
-      collectMaterialTextures(material, textures);
-    });
-  });
-
-  return {
-    modelLoaded: true,
-    meshCount,
-    triangleCount,
-    materialCount: materials.size,
-    textureCount: textures.size,
-    geometryCount: geometries.size
-  };
-}
-
-function collectMaterialTextures(material: THREE.Material, textures: Set<THREE.Texture>) {
-  Object.values(material as unknown as Record<string, unknown>).forEach((value) => {
-    if (value instanceof THREE.Texture) {
-      textures.add(value);
-    }
-  });
 }
 
 function forceVisibleModel(root: THREE.Object3D) {
@@ -2578,6 +2963,15 @@ function vectorDebug(vector: { x: number; y: number; z: number }) {
   };
 }
 
+function quaternionDebug(quaternion: THREE.Quaternion) {
+  return {
+    x: roundForDebug(finiteNumber(quaternion.x, 0)),
+    y: roundForDebug(finiteNumber(quaternion.y, 0)),
+    z: roundForDebug(finiteNumber(quaternion.z, 0)),
+    w: roundForDebug(finiteNumber(quaternion.w, 1))
+  };
+}
+
 function eulerDegreesDebug(euler: THREE.Euler) {
   return {
     x: roundForDebug(THREE.MathUtils.radToDeg(finiteNumber(euler.x, 0))),
@@ -2587,13 +2981,25 @@ function eulerDegreesDebug(euler: THREE.Euler) {
 }
 
 function viewportDebug() {
+  const stableViewport = stableLayoutViewportSize();
   return {
-    width: window.innerWidth,
-    height: window.innerHeight,
+    width: stableViewport.width,
+    height: stableViewport.height,
     devicePixelRatio: window.devicePixelRatio,
     screenWidth: window.screen.width,
     screenHeight: window.screen.height,
+    visualViewportWidth: window.visualViewport?.width || null,
+    visualViewportHeight: window.visualViewport?.height || null,
+    visualViewportScale: window.visualViewport?.scale || null,
     orientation: window.screen.orientation?.type || ""
+  };
+}
+
+function stableLayoutViewportSize() {
+  const documentElement = document.documentElement;
+  return {
+    width: Math.max(Math.round(window.innerWidth || documentElement.clientWidth || 1), 1),
+    height: Math.max(Math.round(window.innerHeight || documentElement.clientHeight || 1), 1)
   };
 }
 

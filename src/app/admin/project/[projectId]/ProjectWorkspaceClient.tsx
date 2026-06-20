@@ -26,6 +26,17 @@ type UploadProgress = {
 
 type UploadStage = "idle" | "uploading" | "saving";
 type SaveState = "saved" | "dirty" | "saving" | "error";
+type TechnicalTargetPreset = "A4" | "A3" | "A2" | "A1" | "A0";
+
+type TechnicalTargetOutput = {
+  preset: TechnicalTargetPreset;
+  widthMm: number;
+  heightMm: number;
+  svg: string;
+  svgDataUrl: string;
+  pngDataUrl: string;
+  fileBaseName: string;
+};
 
 type UploadRouteResponse = {
   error?: string;
@@ -33,6 +44,13 @@ type UploadRouteResponse = {
 
 const MAX_GLB_SIZE_BYTES = 500 * 1024 * 1024;
 const MULTIPART_THRESHOLD_BYTES = 8 * 1024 * 1024;
+const TECHNICAL_TARGET_PRESETS: Record<TechnicalTargetPreset, { widthMm: number; heightMm: number }> = {
+  A4: { widthMm: 297, heightMm: 210 },
+  A3: { widthMm: 420, heightMm: 297 },
+  A2: { widthMm: 594, heightMm: 420 },
+  A1: { widthMm: 841, heightMm: 594 },
+  A0: { widthMm: 1189, heightMm: 841 }
+};
 
 export function ProjectWorkspaceClient({ projectId }: { projectId: string }) {
   const [password] = useState(() =>
@@ -805,6 +823,28 @@ function SceneInspector({
   onFit: () => void;
   onRotate: (axis: "x" | "y" | "z") => void;
 }) {
+  const [technicalTargetPreset, setTechnicalTargetPreset] = useState<TechnicalTargetPreset>("A1");
+  const [technicalTarget, setTechnicalTarget] = useState<TechnicalTargetOutput | null>(null);
+  const [technicalTargetStatus, setTechnicalTargetStatus] = useState("");
+
+  const generateTechnicalTarget = useCallback(async () => {
+    setTechnicalTargetStatus("Generating technical target...");
+
+    try {
+      const nextTarget = await createTechnicalTarget(project, technicalTargetPreset);
+      setTechnicalTarget(nextTarget);
+      setTechnicalTargetStatus("Technical target ready.");
+    } catch (caught) {
+      setTechnicalTarget(null);
+      setTechnicalTargetStatus(
+        caught instanceof Error ? caught.message : "Unable to generate technical target."
+      );
+    }
+  }, [project, technicalTargetPreset]);
+
+  const modelStats = metrics?.modelStats;
+  const modelWarning = modelStats?.warning || "";
+
   return (
     <div className="space-y-3">
       <section>
@@ -868,6 +908,19 @@ function SceneInspector({
         </div>
       </details>
 
+      {modelWarning ? (
+        <section className="rounded-lg border border-[#f3b49b] bg-[#fff7ed] p-3">
+          <h3 className="text-sm font-semibold text-[var(--ink)]">Mobile WebAR performance</h3>
+          <p className="mt-2 text-xs font-bold leading-5 text-[#9a3412]">{modelWarning}</p>
+          {modelStats ? (
+            <p className="mt-2 text-xs font-semibold leading-5 text-[var(--muted)]">
+              {formatNumber(modelStats.triangleCount)} triangles, {modelStats.meshCount} meshes,{" "}
+              {modelStats.materialCount} materials, {modelStats.textureCount} textures.
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+
       <section className="rounded-lg border border-[var(--line)] bg-white p-3">
         <h3 className="text-sm font-semibold text-[var(--ink)]">Image target</h3>
         <div className="mt-3 overflow-hidden rounded-md border border-[var(--line)] bg-[var(--soft)]">
@@ -903,6 +956,69 @@ function SceneInspector({
         <a className="button-compact mt-3 w-full justify-center" href={project.target.imageUrl} download>
           Download target image
         </a>
+
+        <div className="mt-3 rounded-lg border border-dashed border-[var(--line)] bg-[var(--soft)] p-3">
+          <h4 className="text-sm font-semibold text-[var(--ink)]">Technical MindAR target</h4>
+          <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+            <label className="block text-xs font-semibold uppercase text-[var(--muted)]">
+              Print preset
+              <select
+                value={technicalTargetPreset}
+                onChange={(event) =>
+                  setTechnicalTargetPreset(event.target.value as TechnicalTargetPreset)
+                }
+                className="focus-ring mt-1.5 h-9 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm font-medium text-[var(--ink)] shadow-inner"
+              >
+                {Object.keys(TECHNICAL_TARGET_PRESETS).map((preset) => (
+                  <option key={preset} value={preset}>
+                    {preset}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="button-compact-primary mt-6"
+              onClick={generateTechnicalTarget}
+            >
+              Generate Technical Target
+            </button>
+          </div>
+          <p className="mt-2 text-xs font-semibold leading-5 text-[var(--muted)]">
+            Export this high-contrast image, then generate or replace the project `.mind` target from it.
+          </p>
+          {technicalTargetStatus ? (
+            <p className="mt-2 text-xs font-bold text-[var(--muted)]">{technicalTargetStatus}</p>
+          ) : null}
+          {technicalTarget ? (
+            <div className="mt-3 space-y-3">
+              <div className="overflow-hidden rounded-md border border-[var(--line)] bg-white">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={technicalTarget.svgDataUrl}
+                  alt={`${technicalTarget.preset} technical MindAR target`}
+                  className="w-full"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <a
+                  className="button-compact justify-center"
+                  href={technicalTarget.pngDataUrl}
+                  download={`${technicalTarget.fileBaseName}.png`}
+                >
+                  Download PNG
+                </a>
+                <a
+                  className="button-compact justify-center"
+                  href={technicalTarget.svgDataUrl}
+                  download={`${technicalTarget.fileBaseName}.svg`}
+                >
+                  Download SVG
+                </a>
+              </div>
+            </div>
+          ) : null}
+        </div>
       </section>
 
       <section className="rounded-lg border border-[var(--line)] bg-white p-3">
@@ -1110,6 +1226,316 @@ function NumberField({
         className="focus-ring mt-1.5 h-9 w-full rounded-md border border-[var(--line)] bg-white px-2.5 text-sm font-medium text-[var(--ink)] shadow-inner"
       />
     </label>
+  );
+}
+
+async function createTechnicalTarget(
+  project: ProjectMetadata,
+  presetKey: TechnicalTargetPreset
+): Promise<TechnicalTargetOutput> {
+  const preset = TECHNICAL_TARGET_PRESETS[presetKey];
+  const qrDataUrl = await QRCode.toDataURL(project.arUrl, {
+    margin: 1,
+    width: 900,
+    errorCorrectionLevel: "H",
+    color: {
+      dark: "#000000",
+      light: "#ffffff"
+    }
+  });
+  const svg = buildTechnicalTargetSvg({
+    project,
+    preset: presetKey,
+    widthMm: preset.widthMm,
+    heightMm: preset.heightMm,
+    qrDataUrl
+  });
+  const svgDataUrl = svgToDataUrl(svg);
+  const pngDataUrl = await renderSvgToPng(svg, preset.widthMm, preset.heightMm);
+  const fileBaseName = `${slugForFile(project.id)}-${presetKey.toLowerCase()}-technical-target`;
+
+  return {
+    preset: presetKey,
+    widthMm: preset.widthMm,
+    heightMm: preset.heightMm,
+    svg,
+    svgDataUrl,
+    pngDataUrl,
+    fileBaseName
+  };
+}
+
+function buildTechnicalTargetSvg({
+  project,
+  preset,
+  widthMm,
+  heightMm,
+  qrDataUrl
+}: {
+  project: ProjectMetadata;
+  preset: TechnicalTargetPreset;
+  widthMm: number;
+  heightMm: number;
+  qrDataUrl: string;
+}) {
+  const shortSide = Math.min(widthMm, heightMm);
+  const margin = roundSvg(shortSide * 0.025);
+  const border = roundSvg(Math.max(4, shortSide * 0.012));
+  const sideBand = roundSvg(Math.max(18, shortSide * 0.09));
+  const labelHeight = roundSvg(Math.max(14, shortSide * 0.055));
+  const innerX = margin + border;
+  const innerY = margin + border;
+  const innerWidth = widthMm - innerX * 2;
+  const innerHeight = heightMm - innerY * 2;
+  const fieldX = innerX + sideBand;
+  const fieldY = innerY + labelHeight;
+  const fieldWidth = innerWidth - sideBand * 2;
+  const fieldHeight = innerHeight - labelHeight * 2;
+  const qrSize = roundSvg(Math.min(Math.max(shortSide * 0.18, 34), 78));
+  const qrX = roundSvg(widthMm - innerX - qrSize - 5);
+  const qrY = roundSvg(heightMm - innerY - qrSize - 5);
+  const projectName = escapeSvgText(project.name || project.id);
+  const generatedDate = new Date().toISOString().slice(0, 10);
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${widthMm}mm" height="${heightMm}mm" viewBox="0 0 ${widthMm} ${heightMm}" role="img" aria-label="Technical MindAR image target">
+  <rect width="${widthMm}" height="${heightMm}" fill="#ffffff"/>
+  <rect x="${margin}" y="${margin}" width="${widthMm - margin * 2}" height="${heightMm - margin * 2}" fill="#ffffff" stroke="#000000" stroke-width="${border}"/>
+  <rect x="${innerX}" y="${innerY}" width="${innerWidth}" height="${innerHeight}" fill="none" stroke="#000000" stroke-width="1.2"/>
+  <line x1="${innerX}" y1="${innerY}" x2="${widthMm - innerX}" y2="${heightMm - innerY}" stroke="#000000" stroke-width="1.4"/>
+  <line x1="${widthMm - innerX}" y1="${innerY}" x2="${innerX}" y2="${heightMm - innerY}" stroke="#000000" stroke-width="0.9"/>
+  ${cornerMarkerTopLeft(innerX, innerY, sideBand)}
+  ${cornerMarkerTopRight(widthMm - innerX - sideBand, innerY, sideBand)}
+  ${cornerMarkerBottomLeft(innerX, heightMm - innerY - sideBand, sideBand)}
+  ${cornerMarkerBottomRight(widthMm - innerX - sideBand, heightMm - innerY - sideBand, sideBand)}
+  ${topBottomLabels(innerX, innerY, innerWidth, innerHeight, labelHeight, preset)}
+  ${sideBands(innerX, innerY, innerWidth, innerHeight, sideBand)}
+  ${centralFeatureField(fieldX, fieldY, fieldWidth, fieldHeight, project)}
+  <rect x="${qrX - 2}" y="${qrY - 2}" width="${qrSize + 4}" height="${qrSize + 4}" fill="#ffffff" stroke="#000000" stroke-width="1.4"/>
+  <image href="${escapeSvgAttribute(qrDataUrl)}" x="${qrX}" y="${qrY}" width="${qrSize}" height="${qrSize}" preserveAspectRatio="xMidYMid meet"/>
+  <text x="${qrX + qrSize / 2}" y="${qrY - 4}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(shortSide * 0.018)}" font-weight="900" fill="#000000">AR QR</text>
+  <text x="${innerX}" y="${heightMm - margin - 2}" font-family="Arial, sans-serif" font-size="${roundSvg(shortSide * 0.018)}" font-weight="900" fill="#000000">PROJECT: ${projectName}</text>
+  <text x="${widthMm - innerX}" y="${heightMm - margin - 2}" text-anchor="end" font-family="Arial, sans-serif" font-size="${roundSvg(shortSide * 0.016)}" font-weight="700" fill="#000000">TARGET ${preset} - GENERATED ${generatedDate}</text>
+</svg>`;
+}
+
+function cornerMarkerTopLeft(x: number, y: number, size: number) {
+  const mid = roundSvg(size / 2);
+  return `<g>
+    <rect x="${x + 4}" y="${y + 4}" width="${size - 8}" height="${size - 8}" fill="#000000"/>
+    <rect x="${x + 10}" y="${y + 10}" width="${size - 20}" height="${size - 20}" fill="#ffffff"/>
+    <circle cx="${x + mid}" cy="${y + mid}" r="${roundSvg(size * 0.16)}" fill="#000000"/>
+    <text x="${x + mid}" y="${y + size - 3}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(size * 0.16)}" font-weight="900" fill="#ffffff">TL-01</text>
+  </g>`;
+}
+
+function cornerMarkerTopRight(x: number, y: number, size: number) {
+  const mid = roundSvg(size / 2);
+  return `<g>
+    <rect x="${x + 4}" y="${y + 4}" width="${size - 8}" height="${size - 8}" fill="#ffffff" stroke="#000000" stroke-width="2"/>
+    <line x1="${x + mid}" y1="${y + 6}" x2="${x + mid}" y2="${y + size - 6}" stroke="#000000" stroke-width="3"/>
+    <line x1="${x + 6}" y1="${y + mid}" x2="${x + size - 6}" y2="${y + mid}" stroke="#000000" stroke-width="1.7"/>
+    <circle cx="${x + mid}" cy="${y + mid}" r="${roundSvg(size * 0.28)}" fill="none" stroke="#000000" stroke-width="2.2"/>
+    <text x="${x + mid}" y="${y + size - 3}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(size * 0.16)}" font-weight="900" fill="#000000">TR-19</text>
+  </g>`;
+}
+
+function cornerMarkerBottomLeft(x: number, y: number, size: number) {
+  const inset = roundSvg(size * 0.14);
+  return `<g>
+    <rect x="${x + 4}" y="${y + 4}" width="${size - 8}" height="${size - 8}" fill="#ffffff" stroke="#000000" stroke-width="2"/>
+    <polygon points="${x + inset},${y + size - inset} ${x + size / 2},${y + inset} ${x + size - inset},${y + size - inset}" fill="#000000"/>
+    <polygon points="${x + size * 0.28},${y + size * 0.72} ${x + size / 2},${y + size * 0.32} ${x + size * 0.72},${y + size * 0.72}" fill="#ffffff"/>
+    <text x="${x + size / 2}" y="${y + size - 3}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(size * 0.16)}" font-weight="900" fill="#000000">BL-37</text>
+  </g>`;
+}
+
+function cornerMarkerBottomRight(x: number, y: number, size: number) {
+  const bars = Array.from({ length: 7 }, (_, index) => {
+    const barWidth = index % 2 === 0 ? size * 0.1 : size * 0.18;
+    const barX = x + 7 + index * size * 0.115;
+    return `<rect x="${roundSvg(barX)}" y="${roundSvg(y + 8)}" width="${roundSvg(barWidth)}" height="${roundSvg(size - 16)}" fill="#000000"/>`;
+  }).join("");
+
+  return `<g>
+    <rect x="${x + 4}" y="${y + 4}" width="${size - 8}" height="${size - 8}" fill="#ffffff" stroke="#000000" stroke-width="2"/>
+    ${bars}
+    <line x1="${x + 7}" y1="${y + size * 0.33}" x2="${x + size - 7}" y2="${y + size * 0.77}" stroke="#ffffff" stroke-width="2"/>
+    <text x="${x + size / 2}" y="${y + size - 3}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(size * 0.16)}" font-weight="900" fill="#000000">BR-82</text>
+  </g>`;
+}
+
+function topBottomLabels(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  labelHeight: number,
+  preset: TechnicalTargetPreset
+) {
+  const fontSize = roundSvg(labelHeight * 0.34);
+  const tickStep = width / 16;
+  const topTicks = Array.from({ length: 17 }, (_, index) => {
+    const tickX = roundSvg(x + index * tickStep);
+    const tickHeight = index % 4 === 0 ? labelHeight * 0.65 : labelHeight * 0.35;
+    return `<line x1="${tickX}" y1="${y}" x2="${tickX}" y2="${roundSvg(y + tickHeight)}" stroke="#000000" stroke-width="${index % 4 === 0 ? 1.4 : 0.8}"/>`;
+  }).join("");
+  const bottomTicks = Array.from({ length: 13 }, (_, index) => {
+    const tickX = roundSvg(x + index * (width / 12));
+    return `<text x="${tickX}" y="${roundSvg(y + height - 3)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(fontSize * 0.68)}" font-weight="900" fill="#000000">${String(index).padStart(2, "0")}</text>`;
+  }).join("");
+
+  return `<g>
+    <rect x="${x}" y="${y}" width="${width}" height="${labelHeight}" fill="#ffffff"/>
+    <rect x="${x}" y="${y + height - labelHeight}" width="${width}" height="${labelHeight}" fill="#ffffff"/>
+    ${topTicks}
+    ${bottomTicks}
+    <text x="${x + width / 2}" y="${roundSvg(y + labelHeight * 0.66)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${fontSize}" font-weight="900" fill="#000000">TOP - TECHNICAL IMAGE TARGET - ${preset}</text>
+    <text x="${x + width / 2}" y="${roundSvg(y + height - labelHeight * 0.28)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(fontSize * 0.8)}" font-weight="900" fill="#000000">BOTTOM - USE FULL PAGE FOR MINDAR IMAGE TARGET GENERATION</text>
+    <text x="${roundSvg(x + 4)}" y="${roundSvg(y + labelHeight * 0.65)}" font-family="Arial, sans-serif" font-size="${roundSvg(fontSize * 0.7)}" font-weight="900" fill="#000000">LEFT</text>
+    <text x="${roundSvg(x + width - 4)}" y="${roundSvg(y + labelHeight * 0.65)}" text-anchor="end" font-family="Arial, sans-serif" font-size="${roundSvg(fontSize * 0.7)}" font-weight="900" fill="#000000">RIGHT</text>
+  </g>`;
+}
+
+function sideBands(x: number, y: number, width: number, height: number, sideBand: number) {
+  const usableY = y + sideBand;
+  const usableHeight = height - sideBand * 2;
+  const leftBlocks = Array.from({ length: 15 }, (_, index) => {
+    const blockY = usableY + index * (usableHeight / 15);
+    const blockHeight = usableHeight / 20 + ((index * 7) % 5);
+    const blockWidth = sideBand * (0.28 + ((index * 11) % 7) * 0.055);
+    const fill = index % 3 === 0 ? "#000000" : "#ffffff";
+    const stroke = fill === "#000000" ? "#000000" : "#000000";
+    return `<rect x="${roundSvg(x + 5)}" y="${roundSvg(blockY)}" width="${roundSvg(blockWidth)}" height="${roundSvg(blockHeight)}" fill="${fill}" stroke="${stroke}" stroke-width="0.8"/>`;
+  }).join("");
+  const rightBars = Array.from({ length: 18 }, (_, index) => {
+    const barY = usableY + index * (usableHeight / 18);
+    const barLength = sideBand * (0.45 + ((index * 5) % 6) * 0.07);
+    return `<line x1="${roundSvg(x + width - 5)}" y1="${roundSvg(barY)}" x2="${roundSvg(x + width - 5 - barLength)}" y2="${roundSvg(barY + sideBand * 0.35)}" stroke="#000000" stroke-width="${index % 2 === 0 ? 1.8 : 0.9}"/>`;
+  }).join("");
+  const leftNumbers = Array.from({ length: 8 }, (_, index) => {
+    const labelY = usableY + index * (usableHeight / 7);
+    return `<text x="${roundSvg(x + sideBand * 0.66)}" y="${roundSvg(labelY)}" font-family="Arial, sans-serif" font-size="${roundSvg(sideBand * 0.16)}" font-weight="900" fill="#000000" transform="rotate(-90 ${roundSvg(x + sideBand * 0.66)} ${roundSvg(labelY)})">L-${index * 13 + 5}</text>`;
+  }).join("");
+
+  return `<g>
+    <rect x="${x}" y="${y + sideBand}" width="${sideBand}" height="${height - sideBand * 2}" fill="#ffffff" stroke="#000000" stroke-width="0.8"/>
+    <rect x="${x + width - sideBand}" y="${y + sideBand}" width="${sideBand}" height="${height - sideBand * 2}" fill="#ffffff" stroke="#000000" stroke-width="0.8"/>
+    ${leftBlocks}
+    ${rightBars}
+    ${leftNumbers}
+    <text x="${roundSvg(x + sideBand * 0.5)}" y="${roundSvg(y + height / 2)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(sideBand * 0.28)}" font-weight="900" fill="#000000" transform="rotate(-90 ${roundSvg(x + sideBand * 0.5)} ${roundSvg(y + height / 2)})">LEFT EDGE FEATURES</text>
+    <text x="${roundSvg(x + width - sideBand * 0.5)}" y="${roundSvg(y + height / 2)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(sideBand * 0.24)}" font-weight="900" fill="#000000" transform="rotate(90 ${roundSvg(x + width - sideBand * 0.5)} ${roundSvg(y + height / 2)})">RIGHT ASYMMETRIC EDGE</text>
+  </g>`;
+}
+
+function centralFeatureField(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  project: ProjectMetadata
+) {
+  const columnCount = 9;
+  const rowCount = 6;
+  const grid = Array.from({ length: columnCount * rowCount }, (_, index) => {
+    const column = index % columnCount;
+    const row = Math.floor(index / columnCount);
+    const cellX = x + column * (width / columnCount);
+    const cellY = y + row * (height / rowCount);
+    const cellWidth = width / columnCount;
+    const cellHeight = height / rowCount;
+    const fill = (column * 3 + row * 5) % 4 === 0 ? "#000000" : "#ffffff";
+    const accent =
+      (column + row) % 3 === 0
+        ? `<circle cx="${roundSvg(cellX + cellWidth * 0.72)}" cy="${roundSvg(cellY + cellHeight * 0.34)}" r="${roundSvg(Math.min(cellWidth, cellHeight) * 0.12)}" fill="${fill === "#000000" ? "#ffffff" : "#000000"}"/>`
+        : `<line x1="${roundSvg(cellX + cellWidth * 0.18)}" y1="${roundSvg(cellY + cellHeight * 0.78)}" x2="${roundSvg(cellX + cellWidth * 0.82)}" y2="${roundSvg(cellY + cellHeight * 0.18)}" stroke="${fill === "#000000" ? "#ffffff" : "#000000"}" stroke-width="0.8"/>`;
+    return `<g>
+      <rect x="${roundSvg(cellX)}" y="${roundSvg(cellY)}" width="${roundSvg(cellWidth)}" height="${roundSvg(cellHeight)}" fill="${fill}" stroke="#000000" stroke-width="0.35"/>
+      ${accent}
+      <text x="${roundSvg(cellX + cellWidth * 0.08)}" y="${roundSvg(cellY + cellHeight * 0.26)}" font-family="Arial, sans-serif" font-size="${roundSvg(Math.min(cellWidth, cellHeight) * 0.16)}" font-weight="900" fill="${fill === "#000000" ? "#ffffff" : "#000000"}">${column}${row}</text>
+    </g>`;
+  }).join("");
+  const diagonals = Array.from({ length: 12 }, (_, index) => {
+    const startX = x + (index / 12) * width;
+    const endX = x + ((index + 4) / 12) * width;
+    return `<line x1="${roundSvg(startX)}" y1="${y}" x2="${roundSvg(endX)}" y2="${roundSvg(y + height)}" stroke="#000000" stroke-width="${index % 2 === 0 ? 0.8 : 0.35}" opacity="0.85"/>`;
+  }).join("");
+  const targetSize = `${formatNumber(project.target.widthMm)}mm x ${formatNumber(project.target.heightMm)}mm`;
+
+  return `<g>
+    <rect x="${x}" y="${y}" width="${width}" height="${height}" fill="#ffffff" stroke="#000000" stroke-width="1.4"/>
+    ${grid}
+    ${diagonals}
+    <rect x="${roundSvg(x + width * 0.22)}" y="${roundSvg(y + height * 0.32)}" width="${roundSvg(width * 0.56)}" height="${roundSvg(height * 0.28)}" fill="#ffffff" stroke="#000000" stroke-width="1.8"/>
+    <text x="${roundSvg(x + width / 2)}" y="${roundSvg(y + height * 0.43)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(Math.min(width, height) * 0.06)}" font-weight="900" fill="#000000">MASTERPLAN AREA</text>
+    <text x="${roundSvg(x + width / 2)}" y="${roundSvg(y + height * 0.52)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(Math.min(width, height) * 0.037)}" font-weight="900" fill="#000000">TARGET SIZE ${escapeSvgText(targetSize)}</text>
+    <text x="${roundSvg(x + width / 2)}" y="${roundSvg(y + height * 0.58)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="${roundSvg(Math.min(width, height) * 0.032)}" font-weight="700" fill="#000000">NON-REPEATING TECHNICAL FEATURES FOR IMAGE TRACKING</text>
+  </g>`;
+}
+
+function svgToDataUrl(svg: string) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+async function renderSvgToPng(svg: string, widthMm: number, heightMm: number) {
+  const image = new Image();
+  const svgUrl = svgToDataUrl(svg);
+  const pxPerMm = 4;
+  const maxPixels = 20000000;
+  let widthPx = Math.round(widthMm * pxPerMm);
+  let heightPx = Math.round(heightMm * pxPerMm);
+  const pixelCount = widthPx * heightPx;
+
+  if (pixelCount > maxPixels) {
+    const scale = Math.sqrt(maxPixels / pixelCount);
+    widthPx = Math.round(widthPx * scale);
+    heightPx = Math.round(heightPx * scale);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("Unable to rasterize technical target."));
+    image.src = svgUrl;
+  });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = widthPx;
+  canvas.height = heightPx;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas is unavailable for PNG export.");
+  }
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, widthPx, heightPx);
+  context.drawImage(image, 0, 0, widthPx, heightPx);
+  return canvas.toDataURL("image/png");
+}
+
+function escapeSvgText(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeSvgAttribute(value: string) {
+  return escapeSvgText(value).replace(/"/g, "&quot;");
+}
+
+function roundSvg(value: number) {
+  return Math.round(value * 1000) / 1000;
+}
+
+function slugForFile(value: string) {
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "project"
   );
 }
 

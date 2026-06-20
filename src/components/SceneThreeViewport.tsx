@@ -16,6 +16,7 @@ import {
   sceneTransformFromObject,
   type SceneScaleMetrics
 } from "@/lib/scene-transform";
+import { collectModelPerformanceStats, type ModelPerformanceStats } from "@/lib/model-stats";
 import { loadGltfModel } from "@/lib/three-gltf";
 import type { SceneMetadata } from "@/lib/projects";
 
@@ -50,6 +51,15 @@ export function SceneThreeViewport({
   const transformRef = useRef<TransformControls | null>(null);
   const sceneRef = useRef<SceneMetadata | null>(scene);
   const baseFitScaleRef = useRef(1);
+  const modelStatsRef = useRef<ModelPerformanceStats | null>(null);
+
+  const emitMetrics = useCallback((nextMetrics: SceneScaleMetrics) => {
+    onMetricsChange?.(
+      modelStatsRef.current
+        ? { ...nextMetrics, modelStats: modelStatsRef.current }
+        : nextMetrics
+    );
+  }, [onMetricsChange]);
 
   const applyCurrentScene = useCallback(() => {
     const fitObject = fitObjectRef.current;
@@ -70,8 +80,8 @@ export function SceneThreeViewport({
     const runtimeTransform = computeSceneTransformForRuntime(fitObject, currentScene, target, "desktop");
     applyRuntimeSceneTransform(placementRoot, scaleRoot, runtimeTransform);
     baseFitScaleRef.current = runtimeTransform.metrics.baseFitScale;
-    onMetricsChange?.(runtimeTransform.metrics);
-  }, [target, onMetricsChange]);
+    emitMetrics(runtimeTransform.metrics);
+  }, [target, emitMetrics]);
 
   useEffect(() => {
     sceneRef.current = scene;
@@ -98,6 +108,7 @@ export function SceneThreeViewport({
     const maxTargetMeters = Math.max(targetGeometry.widthM, targetGeometry.heightM);
 
     onMetricsChange?.(null);
+    modelStatsRef.current = null;
     onStatusChange?.(activeScene?.modelUrl ? "Loading 3D scene..." : "Ready for a GLB scene.");
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
@@ -244,6 +255,7 @@ export function SceneThreeViewport({
         if (stopped) return;
 
         const model = gltf.scene;
+        modelStatsRef.current = collectModelPerformanceStats(model);
         model.traverse((child) => {
           if (child instanceof THREE.Mesh) {
             child.castShadow = true;
@@ -280,7 +292,7 @@ export function SceneThreeViewport({
         );
         applyRuntimeSceneTransform(placementRoot, scaleRoot, runtimeTransform);
         baseFitScaleRef.current = runtimeTransform.metrics.baseFitScale;
-        onMetricsChange?.(runtimeTransform.metrics);
+        emitMetrics(runtimeTransform.metrics);
         transform?.attach(transformMode === "scale" ? scaleRoot : placementRoot);
         onStatusChange?.("Scene loaded.");
       } catch (caught) {
@@ -342,6 +354,7 @@ export function SceneThreeViewport({
     target.correctionMode,
     target.widthMm,
     onMetricsChange,
+    emitMetrics,
     onSceneChange,
     onStatusChange,
     scene?.id,

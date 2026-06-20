@@ -16,6 +16,7 @@ import {
   type ModelCorrectionMode,
   type PlacementMetadata
 } from "@/lib/placement";
+import type { ModelPerformanceStats } from "@/lib/model-stats";
 import type { SceneMetadata } from "@/lib/projects";
 
 export type SceneRuntimeKind = "desktop" | "ar";
@@ -31,6 +32,7 @@ export type SceneScaleMetrics = {
   targetHeightM: number;
   boundsValid: boolean;
   scaleFallbackReason?: string;
+  modelStats?: ModelPerformanceStats;
 };
 
 export type SceneRuntimeTransform = {
