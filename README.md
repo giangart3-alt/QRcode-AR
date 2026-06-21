@@ -18,22 +18,18 @@ Run locally:
 npm run dev
 ```
 
-## A0 multi-marker target
+## Single image target
 
-The app now uses one active A0 multi-marker tracking sheet:
+The app uses one active MindAR image target:
 
-- `public/tracking-sheets/marker-sheet-a0-v1/tracking-sheet-manifest.json`
-- `public/tracking-sheets/marker-sheet-a0-v1/marker-sheet-a0-v1.mind`
-- `public/tracking-sheets/marker-sheet-a0-v1/layout-preview-a0.png`
-- `public/tracking-sheets/marker-sheet-a0-v1/markers/*.png`
-- `public/tracking-sheets/marker-sheet-a0-v1/tracking-sheet-report.json`
+- `public/targets/masterplan-marker-frame.png`
+- `public/targets/masterplan-marker-frame.mind`
+- `public/targets/masterplan-target-manifest.json`
 - `public/vendor/mind-ar/` browser runtime files
 
-The `.mind` file is compiled locally from the eight ordered marker PNGs and committed. Do not generate it during Vercel builds.
+The `.mind` file is compiled from the same `masterplan-marker-frame.png` image that the app displays and downloads. Do not generate it during Vercel builds.
 
-Print or display the A0 sheet flat. The full sheet is not one image target: each local marker is an individual MindAR target. Detecting any one marker reconstructs the global sheet pose; if more than one marker is visible, the runtime can use a simple fused pose.
-
-Use `npm run generate:a0-marker-sheet` after editing marker assets. The command regenerates the A0 PNG/SVG/manifest files and verifies the committed `.mind` file still exposes eight ordered 1024 x 1024 targets. In the AR viewer, select `Multi-Marker A0 Test` to confirm marker detection before testing sheet-pose model placement.
+Print or display the masterplan image flat. The public AR viewer opens directly into single-target MindAR tracking.
 
 ## Vercel environment variables
 

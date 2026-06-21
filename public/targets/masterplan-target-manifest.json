@@ -1,28 +1,28 @@
 {
-  "sheetId": "legacy-masterplan-single-target",
-  "version": "marker-frame-masterplan-v1",
-  "format": "legacy-single-target",
+  "sheetId": "per-marker-ar-masterplan",
+  "version": "per-marker-ar-masterplan-v1",
+  "format": "single-target",
   "orientation": "landscape",
-  "imageTargetMode": "single-target-legacy",
+  "imageTargetMode": "single-target-masterplan",
   "mindUrl": "masterplan-marker-frame.mind",
   "previewPng": "masterplan-marker-frame.png",
   "physicalSize": {
-    "widthMm": 841,
-    "heightMm": 698
+    "widthMm": 844.5,
+    "heightMm": 554.5
   },
   "markers": [
     {
-      "id": "Legacy_Masterplan",
+      "id": "Masterplan",
       "targetIndex": 0,
       "assetPng": "masterplan-marker-frame.png",
       "x": 0,
       "y": 0,
       "width": 1,
       "height": 1,
-      "widthMm": 841,
-      "heightMm": 698,
+      "widthMm": 844.5,
+      "heightMm": 554.5,
       "rotationDeg": 0,
-      "role": "legacy-single-target"
+      "role": "single-target-masterplan"
     }
   ]
 }

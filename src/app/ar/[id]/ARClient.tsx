@@ -10,7 +10,7 @@ import {
   MASTERPLAN_TARGET_PIXEL_HEIGHT,
   MASTERPLAN_TARGET_PIXEL_WIDTH,
   MASTERPLAN_TARGET_VERSION,
-  createLegacyMasterplanTarget,
+  createDefaultTarget,
   getImageTargetGeometry,
   type ImageTargetSettings,
   type MarkerSheetMarker,
@@ -64,7 +64,7 @@ const AR_TARGET_MODE_STORAGE_KEY = "qrcode-ar:target-mode";
 
 type ARStabilityMode = "realtime" | "balanced" | "stable" | "presentation-lock";
 type ARTrackingMode = "auto" | "mindar-image" | "webxr-world" | "arkit-ios";
-type ARTargetMode = "multi-marker-a0-test" | "multi-marker-a0-sheet-pose" | "single-target-legacy";
+type ARTargetMode = "single-target-masterplan";
 type ARRenderingMode = "preview-parity" | "simple-top-light" | "legacy-ar-lighting";
 type TrackingProviderId = "mindar-image" | "webxr-world" | "arkit-ios" | "commercial-placeholder";
 
@@ -116,7 +116,7 @@ type TrackingPoseUpdate = {
   markerId: string;
   markerRole: string;
   visibleMarkerCount: number;
-  poseSource: MultiMarkerPoseSource;
+  poseSource: TrackingPoseSource;
 };
 
 type TrackingState = {
@@ -129,7 +129,7 @@ type TrackingState = {
   activeMarkerId: string;
   activeMarkerRole: string;
   visibleMarkerCount: number;
-  poseSource: MultiMarkerPoseSource | "";
+  poseSource: TrackingPoseSource | "";
   status: string;
   foundCount: number;
   lostCount: number;
@@ -150,7 +150,7 @@ type TrackingProviderContext = {
   targetMode: ARTargetMode;
 };
 
-type MultiMarkerPoseSource = "marker-detection-test" | "single-marker" | "fused-markers";
+type TrackingPoseSource = "single-target";
 
 type VisibleMarkerPose = {
   marker: MarkerSheetMarker;
@@ -176,18 +176,13 @@ type TrackingProvider = {
   getDebugState(): Record<string, unknown>;
 };
 
-const DEFAULT_STABILITY_MODE: ARStabilityMode = "balanced";
+const DEFAULT_STABILITY_MODE: ARStabilityMode = "stable";
 const DEFAULT_TRACKING_MODE: ARTrackingMode = "auto";
-const DEFAULT_TARGET_MODE: ARTargetMode = "multi-marker-a0-test";
+const DEFAULT_TARGET_MODE: ARTargetMode = "single-target-masterplan";
 const DEFAULT_RENDERING_MODE: ARRenderingMode = "preview-parity";
 
 const AR_STABILITY_MODES: ARStabilityMode[] = ["realtime", "balanced", "stable", "presentation-lock"];
 const AR_TRACKING_MODES: ARTrackingMode[] = ["auto", "mindar-image", "webxr-world", "arkit-ios"];
-const AR_TARGET_MODES: ARTargetMode[] = [
-  "multi-marker-a0-test",
-  "multi-marker-a0-sheet-pose",
-  "single-target-legacy"
-];
 const LOCK_CANDIDATE_ALPHA_AT_60_FPS = 0.18;
 const LOCK_MIN_STABLE_SAMPLES = 8;
 
@@ -286,9 +281,7 @@ const TRACKING_MODE_LABELS: Record<ARTrackingMode, string> = {
 };
 
 const TARGET_MODE_LABELS: Record<ARTargetMode, string> = {
-  "multi-marker-a0-test": "Multi-Marker A0 Test",
-  "multi-marker-a0-sheet-pose": "Multi-Marker A0 Sheet Pose",
-  "single-target-legacy": "Single Target Legacy"
+  "single-target-masterplan": "Single Target Masterplan"
 };
 
 const TRACKING_PROVIDER_LABELS: Record<TrackingProviderId, string> = {
@@ -405,7 +398,7 @@ type RuntimeStatus = {
   maxTrack: number;
   markerFoundCounts: Record<string, number>;
   markerLostCounts: Record<string, number>;
-  poseSource: MultiMarkerPoseSource | "";
+  poseSource: TrackingPoseSource | "";
   markerDetectionTestModeActive: boolean;
   sheetPoseReconstructionActive: boolean;
   imageTargetLoaded: boolean;
@@ -509,7 +502,7 @@ const INITIAL_STATUS: RuntimeStatus = {
   markerFoundCounts: {},
   markerLostCounts: {},
   poseSource: "",
-  markerDetectionTestModeActive: true,
+  markerDetectionTestModeActive: false,
   sheetPoseReconstructionActive: false,
   imageTargetLoaded: false,
   imageTargetVersion: MASTERPLAN_TARGET_VERSION,
@@ -568,7 +561,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
   const stabilityModeRef = useRef<ARStabilityMode>(stabilityMode);
   const [trackingMode, setTrackingMode] = useState<ARTrackingMode>(readInitialTrackingMode);
   const trackingModeRef = useRef<ARTrackingMode>(trackingMode);
-  const [targetMode, setTargetMode] = useState<ARTargetMode>(readInitialTargetMode);
+  const [targetMode] = useState<ARTargetMode>(readInitialTargetMode);
   const targetModeRef = useRef<ARTargetMode>(targetMode);
   const [trackingSupport, setTrackingSupport] = useState<TrackingProviderSupportMap>(DEFAULT_TRACKING_SUPPORT);
   const trackingSupportRef = useRef<TrackingProviderSupportMap>(DEFAULT_TRACKING_SUPPORT);
@@ -627,26 +620,6 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     setRuntimeResetKey((value) => value + 1);
   }, []);
 
-  const applyTargetMode = useCallback((nextMode: ARTargetMode, persist: boolean) => {
-    targetModeRef.current = nextMode;
-    setTargetMode(nextMode);
-
-    if (persist) {
-      try {
-        window.localStorage.setItem(AR_TARGET_MODE_STORAGE_KEY, nextMode);
-      } catch {
-        // The selected mode still applies for this page even if storage is unavailable.
-      }
-    }
-
-    liveDebugRef.current = {
-      ...liveDebugRef.current,
-      trackingTargetMode: nextMode,
-      trackingTargetModeLabel: TARGET_MODE_LABELS[nextMode]
-    };
-    setRuntimeResetKey((value) => value + 1);
-  }, []);
-
   useEffect(() => {
     debugEnabledRef.current = debug;
   }, [debug]);
@@ -674,11 +647,6 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     const nextMode = parseTrackingMode(event.target.value) || DEFAULT_TRACKING_MODE;
     applyTrackingMode(nextMode, true);
   }, [applyTrackingMode]);
-
-  const handleTargetModeChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
-    const nextMode = parseTargetMode(event.target.value) || DEFAULT_TARGET_MODE;
-    applyTargetMode(nextMode, true);
-  }, [applyTargetMode]);
 
   const copyDebugReport = useCallback(async () => {
     const report = {
@@ -980,9 +948,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         stabilizedRoot.add(boardReferenceGroup);
         boardReferenceGroup.add(desktopViewportTransformGroup);
 
-        const detectionDebugRoot = isMarkerDetectionTestMode(activeTargetMode)
-          ? stabilizedRoot
-          : boardReferenceGroup;
+        const detectionDebugRoot = boardReferenceGroup;
         const debugCube = createDebugCube();
         detectionDebugRoot.add(debugCube);
 
@@ -1380,21 +1346,6 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           </span>
         </p>
         <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
-          <label className="flex items-center gap-1.5 rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold backdrop-blur">
-            <span>Mode:</span>
-            <select
-              aria-label="AR target mode"
-              className="max-w-[12rem] rounded bg-white px-1.5 py-1 text-xs font-semibold text-black"
-              value={targetMode}
-              onChange={handleTargetModeChange}
-            >
-              {AR_TARGET_MODES.map((mode) => (
-                <option key={mode} value={mode}>
-                  {TARGET_MODE_LABELS[mode]}
-                </option>
-              ))}
-            </select>
-          </label>
           {advancedControlsVisible ? (
             <>
               <label className="flex items-center gap-1.5 rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold backdrop-blur">
@@ -1454,21 +1405,6 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           </button>
         </div>
       </div>
-
-      {isMarkerDetectionTestMode(targetMode) ? (
-        <div className="pointer-events-none fixed inset-x-0 top-16 z-10 flex justify-center px-3">
-          <div className="max-w-[calc(100vw-1.5rem)] rounded bg-black/75 px-4 py-3 text-center text-white backdrop-blur">
-            <p className="text-sm font-black tracking-[0.08em]">
-              {runtimeStatus.targetFound ? "MARKER FOUND" : "NO MARKER DETECTED"}
-            </p>
-            <p className="mt-1 text-xs font-semibold text-white/80">
-              {runtimeStatus.targetFound
-                ? `${runtimeStatus.activeMarkerId || "marker"} / targetIndex ${runtimeStatus.targetIndex}`
-                : `Loaded ${runtimeStatus.imageTargetSrc || "target"} with ${runtimeStatus.markerTargetCount || 0} targets`}
-            </p>
-          </div>
-        </div>
-      ) : null}
 
       {showFallbackViewer ? (
         <div className="fixed inset-x-0 bottom-0 z-10 p-3">
@@ -1601,7 +1537,7 @@ abstract class BaseTrackingProvider implements TrackingProvider {
   protected activeMarkerId = "";
   protected activeMarkerRole = "";
   protected visibleMarkerCount = 0;
-  protected poseSource: MultiMarkerPoseSource | "" = "";
+  protected poseSource: TrackingPoseSource | "" = "";
   protected foundCount = 0;
   protected lostCount = 0;
   protected lastFoundAtMs = 0;
@@ -1888,39 +1824,6 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
         this.lastTargetDimensions[data.targetIndex] ||
         ([1, 1] as [number, number]);
 
-      if (isMarkerDetectionTestMode(this.targetMode)) {
-        this.visibleMarkerPoses.set(data.targetIndex, {
-          marker,
-          markerMatrix,
-          sheetMatrix: markerMatrix.clone(),
-          updatedAtMs: now,
-          targetDimensions
-        });
-        this.pruneStaleMarkerPoses(now);
-        this.visibleMarkerCount = Math.max(this.visibleTargetIndices.size, this.visibleMarkerPoses.size);
-        this.emitFound(now);
-        this.lastSheetPoseDebug = {
-          detectionTestMode: true,
-          activeMarkerId: marker.id,
-          activeTargetIndex: marker.targetIndex,
-          activeMarkerRole: marker.role,
-          visibleMarkerCount: this.visibleMarkerCount,
-          poseSource: "marker-detection-test",
-          markerTransform: transformDebugFromMatrix(markerMatrix),
-          markerSheetPosition: markerSheetPositionDebug(marker, this.target)
-        };
-        this.emitPose({
-          matrix: markerMatrix,
-          timestampMs: now,
-          targetIndex: marker.targetIndex,
-          markerId: marker.id,
-          markerRole: marker.role,
-          visibleMarkerCount: this.visibleMarkerCount,
-          poseSource: "marker-detection-test"
-        });
-        return;
-      }
-
       const markerLocalSheetMatrix = this.markerLocalSheetMatrixByTargetIndex.get(data.targetIndex);
       if (!markerLocalSheetMatrix) return;
 
@@ -1994,16 +1897,15 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
         sheetMatrix: freshest.sheetMatrix.clone(),
         marker: freshest.marker,
         visibleMarkerCount: 1,
-        poseSource: "single-marker" as const
+        poseSource: "single-target" as const
       };
     }
 
-    const fused = fuseSheetMatrices(poses.map((pose) => pose.sheetMatrix));
     return {
-      sheetMatrix: fused,
+      sheetMatrix: freshest.sheetMatrix.clone(),
       marker: freshest.marker,
-      visibleMarkerCount: poses.length,
-      poseSource: "fused-markers" as const
+      visibleMarkerCount: 1,
+      poseSource: "single-target" as const
     };
   }
 
@@ -2267,12 +2169,7 @@ function parseTrackingMode(value: string | null): ARTrackingMode | null {
 
 function parseTargetMode(value: string | null): ARTargetMode | null {
   if (!value) return null;
-  if (value === "a0-test" || value === "multi-marker-test") return "multi-marker-a0-test";
-  if (value === "a0-sheet" || value === "sheet-pose") return "multi-marker-a0-sheet-pose";
-  if (value === "legacy" || value === "single-target") return "single-target-legacy";
-  return AR_TARGET_MODES.includes(value as ARTargetMode)
-    ? (value as ARTargetMode)
-    : null;
+  return DEFAULT_TARGET_MODE;
 }
 
 function readInitialStabilityMode(): ARStabilityMode {
@@ -2312,36 +2209,28 @@ function getStabilityConfig(mode: ARStabilityMode) {
 }
 
 function createRuntimeTarget(target: ImageTargetSettings, targetMode: ARTargetMode): ImageTargetSettings {
-  if (targetMode === "single-target-legacy") {
-    return createLegacyMasterplanTarget(target);
-  }
-
-  return {
-    ...target,
-    markerSheet: {
-      ...target.markerSheet,
-      maxTrack: 1,
-      markers: [...target.markerSheet.markers].sort((a, b) => a.targetIndex - b.targetIndex)
-    }
-  };
+  void targetMode;
+  return createDefaultTarget(target);
 }
 
 function shouldAttachModelForTargetMode(targetMode: ARTargetMode) {
-  return targetMode !== "multi-marker-a0-test";
+  void targetMode;
+  return true;
 }
 
 function isMarkerDetectionTestMode(targetMode: ARTargetMode) {
-  return targetMode === "multi-marker-a0-test";
+  void targetMode;
+  return false;
 }
 
 function isSheetPoseMode(targetMode: ARTargetMode) {
-  return targetMode === "multi-marker-a0-sheet-pose";
+  void targetMode;
+  return false;
 }
 
 function getModelAttachmentMode(targetMode: ARTargetMode) {
-  if (targetMode === "multi-marker-a0-test") return "none";
-  if (targetMode === "multi-marker-a0-sheet-pose") return "sheet pose";
-  return "marker pose";
+  void targetMode;
+  return "single target";
 }
 
 function emptyMarkerCounts(target: ImageTargetSettings) {
@@ -3238,40 +3127,6 @@ function createMarkerLocalSheetMatrix(marker: MarkerSheetMarker, target: ImageTa
     markerScaleBySheetWidth,
     markerScaleBySheetWidth
   );
-  return new THREE.Matrix4().compose(position, quaternion, scale);
-}
-
-function fuseSheetMatrices(matrices: THREE.Matrix4[]) {
-  const position = new THREE.Vector3();
-  const scale = new THREE.Vector3();
-  const quaternion = new THREE.Quaternion();
-  const currentPosition = new THREE.Vector3();
-  const currentScale = new THREE.Vector3();
-  const currentQuaternion = new THREE.Quaternion();
-
-  matrices.forEach((matrix, index) => {
-    matrix.decompose(currentPosition, currentQuaternion, currentScale);
-    if (index === 0) {
-      position.copy(currentPosition);
-      quaternion.copy(currentQuaternion).normalize();
-      scale.copy(currentScale);
-      return;
-    }
-
-    const weight = 1 / (index + 1);
-    position.lerp(currentPosition, weight);
-    if (quaternion.dot(currentQuaternion) < 0) {
-      currentQuaternion.set(
-        -currentQuaternion.x,
-        -currentQuaternion.y,
-        -currentQuaternion.z,
-        -currentQuaternion.w
-      );
-    }
-    quaternion.slerp(currentQuaternion, weight).normalize();
-    scale.lerp(currentScale, weight);
-  });
-
   return new THREE.Matrix4().compose(position, quaternion, scale);
 }
 
