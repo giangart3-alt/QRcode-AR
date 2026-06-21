@@ -10,6 +10,7 @@ import {
   MASTERPLAN_TARGET_PIXEL_HEIGHT,
   MASTERPLAN_TARGET_PIXEL_WIDTH,
   MASTERPLAN_TARGET_VERSION,
+  createLegacyMasterplanTarget,
   getImageTargetGeometry,
   type ImageTargetSettings,
   type MarkerSheetMarker,
@@ -59,9 +60,12 @@ type MindARImageRuntime = {
 const MINDAR_IMAGE_RUNTIME_URL = "/vendor/mind-ar/mindar-image.prod.js";
 const AR_STABILITY_STORAGE_KEY = "qrcode-ar:stability-mode";
 const AR_TRACKING_MODE_STORAGE_KEY = "qrcode-ar:tracking-mode";
+const AR_TARGET_MODE_STORAGE_KEY = "qrcode-ar:target-mode";
 
 type ARStabilityMode = "realtime" | "balanced" | "stable" | "presentation-lock";
 type ARTrackingMode = "auto" | "mindar-image" | "webxr-world" | "arkit-ios";
+type ARTargetMode = "multi-marker-a0-test" | "multi-marker-a0-sheet-pose" | "single-target-legacy";
+type ARRenderingMode = "preview-parity" | "simple-top-light" | "legacy-ar-lighting";
 type TrackingProviderId = "mindar-image" | "webxr-world" | "arkit-ios" | "commercial-placeholder";
 
 type ARStabilityConfig = {
@@ -143,9 +147,10 @@ type TrackingCameraCalibration = {
 type TrackingProviderContext = {
   video: HTMLVideoElement;
   target: ImageTargetSettings;
+  targetMode: ARTargetMode;
 };
 
-type MultiMarkerPoseSource = "single-marker" | "fused-markers";
+type MultiMarkerPoseSource = "marker-detection-test" | "single-marker" | "fused-markers";
 
 type VisibleMarkerPose = {
   marker: MarkerSheetMarker;
@@ -173,9 +178,16 @@ type TrackingProvider = {
 
 const DEFAULT_STABILITY_MODE: ARStabilityMode = "balanced";
 const DEFAULT_TRACKING_MODE: ARTrackingMode = "auto";
+const DEFAULT_TARGET_MODE: ARTargetMode = "multi-marker-a0-test";
+const DEFAULT_RENDERING_MODE: ARRenderingMode = "preview-parity";
 
 const AR_STABILITY_MODES: ARStabilityMode[] = ["realtime", "balanced", "stable", "presentation-lock"];
 const AR_TRACKING_MODES: ARTrackingMode[] = ["auto", "mindar-image", "webxr-world", "arkit-ios"];
+const AR_TARGET_MODES: ARTargetMode[] = [
+  "multi-marker-a0-test",
+  "multi-marker-a0-sheet-pose",
+  "single-target-legacy"
+];
 const LOCK_CANDIDATE_ALPHA_AT_60_FPS = 0.18;
 const LOCK_MIN_STABLE_SAMPLES = 8;
 
@@ -273,6 +285,12 @@ const TRACKING_MODE_LABELS: Record<ARTrackingMode, string> = {
   "arkit-ios": "Future iOS ARKit"
 };
 
+const TARGET_MODE_LABELS: Record<ARTargetMode, string> = {
+  "multi-marker-a0-test": "Multi-Marker A0 Test",
+  "multi-marker-a0-sheet-pose": "Multi-Marker A0 Sheet Pose",
+  "single-target-legacy": "Single Target Legacy"
+};
+
 const TRACKING_PROVIDER_LABELS: Record<TrackingProviderId, string> = {
   "mindar-image": "MindAR Image",
   "webxr-world": "WebXR World",
@@ -345,9 +363,24 @@ type ResizeDebugState = {
   };
 };
 
+type RenderingDebugState = {
+  renderingMode: ARRenderingMode;
+  lightingMode: string;
+  shadowMapEnabled: boolean;
+  lightsCount: number;
+  arExtraLightsEnabled: boolean;
+  postProcessingEnabled: boolean;
+  toneMapping: string;
+  exposure: number;
+  colorSpace: string;
+  materialOverridesApplied: boolean;
+};
+
 type RuntimeStatus = {
   trackingMode: string;
   selectedTrackingMode: ARTrackingMode;
+  trackingTargetMode: ARTargetMode;
+  trackingTargetModeLabel: string;
   activeTrackingProvider: TrackingProviderId | "";
   activeTrackingProviderLabel: string;
   trackingProviderFallbackReason: string;
@@ -365,8 +398,16 @@ type RuntimeStatus = {
   trackingSheetFormat: string;
   activeMarkerId: string;
   activeMarkerRole: string;
+  lastDetectedMarkerId: string;
+  lastDetectedTargetIndex: number;
   visibleMarkerCount: number;
+  markerTargetCount: number;
+  maxTrack: number;
+  markerFoundCounts: Record<string, number>;
+  markerLostCounts: Record<string, number>;
   poseSource: MultiMarkerPoseSource | "";
+  markerDetectionTestModeActive: boolean;
+  sheetPoseReconstructionActive: boolean;
   imageTargetLoaded: boolean;
   imageTargetVersion: string;
   imageTargetSrc: string;
@@ -383,6 +424,7 @@ type RuntimeStatus = {
   modelLoaded: boolean;
   modelError: string;
   modelAttachedToTarget: boolean;
+  modelAttachmentMode: string;
   modelUrl: string;
   modelPathname: string;
   modelLocalTransform: TransformDebug | null;
@@ -415,6 +457,7 @@ type RuntimeStatus = {
     boundsValid: boolean;
     scaleFallbackReason: string;
   } | null;
+  rendering: RenderingDebugState;
   lastError: string;
 };
 
@@ -423,9 +466,24 @@ const INITIAL_TARGET_SIZE = targetSizeDebug({
   heightMm: 698
 });
 
+const INITIAL_RENDERING_DEBUG: RenderingDebugState = {
+  renderingMode: DEFAULT_RENDERING_MODE,
+  lightingMode: "preview-parity-no-ar-lights",
+  shadowMapEnabled: false,
+  lightsCount: 0,
+  arExtraLightsEnabled: false,
+  postProcessingEnabled: false,
+  toneMapping: "ACESFilmicToneMapping",
+  exposure: 1.05,
+  colorSpace: "srgb",
+  materialOverridesApplied: false
+};
+
 const INITIAL_STATUS: RuntimeStatus = {
   trackingMode: "MindAR Image",
   selectedTrackingMode: DEFAULT_TRACKING_MODE,
+  trackingTargetMode: DEFAULT_TARGET_MODE,
+  trackingTargetModeLabel: TARGET_MODE_LABELS[DEFAULT_TARGET_MODE],
   activeTrackingProvider: "",
   activeTrackingProviderLabel: "",
   trackingProviderFallbackReason: "",
@@ -443,8 +501,16 @@ const INITIAL_STATUS: RuntimeStatus = {
   trackingSheetFormat: "",
   activeMarkerId: "",
   activeMarkerRole: "",
+  lastDetectedMarkerId: "",
+  lastDetectedTargetIndex: -1,
   visibleMarkerCount: 0,
+  markerTargetCount: 0,
+  maxTrack: 1,
+  markerFoundCounts: {},
+  markerLostCounts: {},
   poseSource: "",
+  markerDetectionTestModeActive: true,
+  sheetPoseReconstructionActive: false,
   imageTargetLoaded: false,
   imageTargetVersion: MASTERPLAN_TARGET_VERSION,
   imageTargetSrc: MASTERPLAN_TARGET_MIND_URL,
@@ -460,6 +526,7 @@ const INITIAL_STATUS: RuntimeStatus = {
   modelLoaded: false,
   modelError: "",
   modelAttachedToTarget: false,
+  modelAttachmentMode: "none",
   modelUrl: "",
   modelPathname: "",
   modelLocalTransform: null,
@@ -479,6 +546,7 @@ const INITIAL_STATUS: RuntimeStatus = {
   targetPhysicalSize: INITIAL_TARGET_SIZE,
   lastKnownGoodSheetPoseAgeMs: 0,
   runtimeScale: null,
+  rendering: INITIAL_RENDERING_DEBUG,
   lastError: ""
 };
 
@@ -500,6 +568,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
   const stabilityModeRef = useRef<ARStabilityMode>(stabilityMode);
   const [trackingMode, setTrackingMode] = useState<ARTrackingMode>(readInitialTrackingMode);
   const trackingModeRef = useRef<ARTrackingMode>(trackingMode);
+  const [targetMode, setTargetMode] = useState<ARTargetMode>(readInitialTargetMode);
+  const targetModeRef = useRef<ARTargetMode>(targetMode);
   const [trackingSupport, setTrackingSupport] = useState<TrackingProviderSupportMap>(DEFAULT_TRACKING_SUPPORT);
   const trackingSupportRef = useRef<TrackingProviderSupportMap>(DEFAULT_TRACKING_SUPPORT);
   const [project, setProject] = useState<ProjectMetadata | null>(null);
@@ -557,6 +627,26 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     setRuntimeResetKey((value) => value + 1);
   }, []);
 
+  const applyTargetMode = useCallback((nextMode: ARTargetMode, persist: boolean) => {
+    targetModeRef.current = nextMode;
+    setTargetMode(nextMode);
+
+    if (persist) {
+      try {
+        window.localStorage.setItem(AR_TARGET_MODE_STORAGE_KEY, nextMode);
+      } catch {
+        // The selected mode still applies for this page even if storage is unavailable.
+      }
+    }
+
+    liveDebugRef.current = {
+      ...liveDebugRef.current,
+      trackingTargetMode: nextMode,
+      trackingTargetModeLabel: TARGET_MODE_LABELS[nextMode]
+    };
+    setRuntimeResetKey((value) => value + 1);
+  }, []);
+
   useEffect(() => {
     debugEnabledRef.current = debug;
   }, [debug]);
@@ -585,6 +675,11 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     applyTrackingMode(nextMode, true);
   }, [applyTrackingMode]);
 
+  const handleTargetModeChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const nextMode = parseTargetMode(event.target.value) || DEFAULT_TARGET_MODE;
+    applyTargetMode(nextMode, true);
+  }, [applyTargetMode]);
+
   const copyDebugReport = useCallback(async () => {
     const report = {
       generatedAt: new Date().toISOString(),
@@ -594,12 +689,14 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       deviceProfile: detectDeviceProfile(),
       selectedTrackingMode: trackingMode,
       selectedTrackingModeLabel: TRACKING_MODE_LABELS[trackingMode],
+      trackingTargetMode: targetMode,
+      trackingTargetModeLabel: TARGET_MODE_LABELS[targetMode],
       trackingSupport,
       stabilityMode,
       stabilityModeLabel: getStabilityConfig(stabilityMode).label,
       publicStatus,
       activeProjectId: project?.id || id,
-      activeTarget: project ? targetDebug(project.target) : null,
+      activeTarget: project ? targetDebug(createRuntimeTarget(project.target, targetMode)) : null,
       savedStatus: runtimeStatus,
       live: liveDebugRef.current
     };
@@ -612,7 +709,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     }
 
     window.setTimeout(() => setDebugCopyStatus(""), 2200);
-  }, [id, project, publicStatus, runtimeStatus, stabilityMode, trackingMode, trackingSupport]);
+  }, [id, project, publicStatus, runtimeStatus, stabilityMode, targetMode, trackingMode, trackingSupport]);
 
   useEffect(() => {
     let cancelled = false;
@@ -624,6 +721,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         projectLoading: true,
         activeProjectId: id,
         selectedTrackingMode: trackingModeRef.current,
+        trackingTargetMode: targetModeRef.current,
+        trackingTargetModeLabel: TARGET_MODE_LABELS[targetModeRef.current],
+        markerDetectionTestModeActive: isMarkerDetectionTestMode(targetModeRef.current),
+        sheetPoseReconstructionActive: isSheetPoseMode(targetModeRef.current),
         trackingSupport: trackingSupportRef.current,
         deviceProfile: typeof window === "undefined" ? null : detectDeviceProfile()
       });
@@ -649,6 +750,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       }
 
       const selectedScene = getActiveSceneForClient(result.project);
+      const runtimeTargetMode = targetModeRef.current;
+      const runtimeTarget = createRuntimeTarget(result.project.target, runtimeTargetMode);
       setProject(result.project);
       patchRuntimeStatus({
         projectLoading: false,
@@ -658,15 +761,21 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         activeSceneName: selectedScene?.name || "",
         modelUrl: selectedScene?.modelUrl || "",
         modelPathname: selectedScene?.modelPathname || "",
-        trackingSheetId: result.project.target.markerSheet.sheetId,
-        trackingSheetVersion: result.project.target.markerSheet.version,
-        trackingSheetFormat: result.project.target.markerSheet.format,
-        imageTargetVersion: result.project.target.targetVersion,
-        imageTargetSrc: result.project.target.mindUrl,
-        imageTargetImage: result.project.target.imageUrl,
-        imageTargetPixelSize: targetPixelSizeDebug(result.project.target),
-        currentCorrectionMode: result.project.target.correctionMode,
-        targetPhysicalSize: targetSizeDebug(result.project.target),
+        trackingTargetMode: runtimeTargetMode,
+        trackingTargetModeLabel: TARGET_MODE_LABELS[runtimeTargetMode],
+        trackingSheetId: runtimeTarget.markerSheet.sheetId,
+        trackingSheetVersion: runtimeTarget.markerSheet.version,
+        trackingSheetFormat: runtimeTarget.markerSheet.format,
+        markerTargetCount: runtimeTarget.markerSheet.markers.length,
+        maxTrack: runtimeTarget.markerSheet.maxTrack,
+        markerDetectionTestModeActive: isMarkerDetectionTestMode(runtimeTargetMode),
+        sheetPoseReconstructionActive: isSheetPoseMode(runtimeTargetMode),
+        imageTargetVersion: runtimeTarget.targetVersion,
+        imageTargetSrc: runtimeTarget.mindUrl,
+        imageTargetImage: runtimeTarget.imageUrl,
+        imageTargetPixelSize: targetPixelSizeDebug(runtimeTarget),
+        currentCorrectionMode: runtimeTarget.correctionMode,
+        targetPhysicalSize: targetSizeDebug(runtimeTarget),
         lastError: "",
         modelError: ""
       });
@@ -695,7 +804,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
     cleanupRef.current?.();
     const currentProject = project;
     const activeScene = getActiveSceneForClient(currentProject);
-    const target = currentProject.target;
+    const activeTargetMode = targetMode;
+    const target = createRuntimeTarget(currentProject.target, activeTargetMode);
+    const shouldAttachModel = shouldAttachModelForTargetMode(activeTargetMode);
+    const modelAttachmentMode = getModelAttachmentMode(activeTargetMode);
     let stopped = false;
     let animationFrame = 0;
     let trackingProvider: TrackingProvider | null = null;
@@ -730,6 +842,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         cameraActive: false,
         mindARInitialized: false,
         selectedTrackingMode: trackingModeRef.current,
+        trackingTargetMode: activeTargetMode,
+        trackingTargetModeLabel: TARGET_MODE_LABELS[activeTargetMode],
         activeTrackingProvider: "",
         activeTrackingProviderLabel: "",
         trackingProviderFallbackReason: "",
@@ -740,8 +854,16 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         targetIndex: 0,
         activeMarkerId: "",
         activeMarkerRole: "",
+        lastDetectedMarkerId: "",
+        lastDetectedTargetIndex: -1,
         visibleMarkerCount: 0,
+        markerTargetCount: target.markerSheet.markers.length,
+        maxTrack: target.markerSheet.maxTrack,
+        markerFoundCounts: emptyMarkerCounts(target),
+        markerLostCounts: emptyMarkerCounts(target),
         poseSource: "",
+        markerDetectionTestModeActive: isMarkerDetectionTestMode(activeTargetMode),
+        sheetPoseReconstructionActive: isSheetPoseMode(activeTargetMode),
         imageTargetLoaded: false,
         trackingSheetId: target.markerSheet.sheetId,
         trackingSheetVersion: target.markerSheet.version,
@@ -759,6 +881,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         modelLoaded: false,
         modelError: "",
         modelAttachedToTarget: false,
+        modelAttachmentMode,
         modelUrl: activeScene?.modelUrl || "",
         modelPathname: activeScene?.modelPathname || "",
         modelLocalTransform: null,
@@ -784,16 +907,16 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         return;
       }
 
-      if (!activeScene) {
+      if (shouldAttachModel && !activeScene) {
         fail("No active scene has been created yet.", "model");
         return;
       }
 
-      if (!activeScene.modelUrl) {
+      if (shouldAttachModel && !activeScene?.modelUrl) {
         fail("Active scene does not have a GLB model yet.", "model");
         return;
       }
-      const activeSceneForRuntime = activeScene;
+      const activeSceneForRuntime = shouldAttachModel ? activeScene : null;
 
       try {
         await ensureStaticAsset(target.mindUrl, ".mind missing");
@@ -813,9 +936,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         rendererRef.current = renderer;
         renderer.getContext();
         applyRendererPixelRatio(renderer, stabilityModeRef.current);
-        renderer.outputColorSpace = THREE.SRGBColorSpace;
-        renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        renderer.toneMappingExposure = 1.2;
+        const renderingDebug = configureARRenderer(renderer, DEFAULT_RENDERING_MODE);
         Object.assign(renderer.domElement.style, {
           position: "fixed",
           inset: "0",
@@ -845,12 +966,11 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         stabilizedRoot.visible = false;
         targetAnchor.add(stabilizedRoot);
 
-        stabilizedRoot.add(new THREE.AmbientLight(0xffffff, 2));
-        const hemisphere = new THREE.HemisphereLight(0xffffff, 0xd7dee8, 3);
-        stabilizedRoot.add(hemisphere);
-        const directional = new THREE.DirectionalLight(0xffffff, 3);
-        directional.position.set(0.6, 1.4, 0.8);
-        stabilizedRoot.add(directional);
+        renderingDebug.lightsCount = configureARRenderingLights(
+          stabilizedRoot,
+          DEFAULT_RENDERING_MODE
+        );
+        renderingDebug.arExtraLightsEnabled = renderingDebug.lightsCount > 0;
 
         const boardReferenceGroup = new THREE.Group();
         const desktopViewportTransformGroup = new THREE.Group();
@@ -860,11 +980,14 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         stabilizedRoot.add(boardReferenceGroup);
         boardReferenceGroup.add(desktopViewportTransformGroup);
 
+        const detectionDebugRoot = isMarkerDetectionTestMode(activeTargetMode)
+          ? stabilizedRoot
+          : boardReferenceGroup;
         const debugCube = createDebugCube();
-        boardReferenceGroup.add(debugCube);
+        detectionDebugRoot.add(debugCube);
 
         const targetAxes = new THREE.AxesHelper(0.18);
-        boardReferenceGroup.add(targetAxes);
+        detectionDebugRoot.add(targetAxes);
 
         const poseStabilizer = new PoseStabilizer();
         const frameRateTracker = new FrameRateTracker();
@@ -881,7 +1004,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           deviceProfile,
           context: {
             video,
-            target
+            target,
+            targetMode: activeTargetMode
           }
         });
         if (stopped) return;
@@ -908,6 +1032,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
             targetIndex,
             activeMarkerId: markerId,
             activeMarkerRole: markerRole,
+            lastDetectedMarkerId: markerId,
+            lastDetectedTargetIndex: targetIndex,
             visibleMarkerCount,
             poseSource
           });
@@ -969,7 +1095,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           trackingProviderFallbackReason: providerStartup.fallbackReason,
           trackingSupport: latestSupport,
           deviceProfile,
-          mindARInitialized: trackingProvider.id === "mindar-image"
+          mindARInitialized: trackingProvider.id === "mindar-image",
+          rendering: renderingDebug
         });
         updatePublicStatus("target searching");
 
@@ -994,6 +1121,9 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         }
 
         async function loadActiveModel() {
+          if (!activeSceneForRuntime) return;
+          const sceneForModel = activeSceneForRuntime;
+
           updatePublicStatus("loading model");
           patchRuntimeStatus({
             modelLoading: true,
@@ -1003,7 +1133,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           });
 
           try {
-            const gltf = await loadGltfModel(activeSceneForRuntime.modelUrl);
+            const gltf = await loadGltfModel(sceneForModel.modelUrl);
             if (stopped) return;
 
             const model = gltf.scene;
@@ -1018,7 +1148,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
             });
             const runtimeTransform = computeSceneTransformForRuntime(
               modelCorrectionGroup,
-              activeSceneForRuntime,
+              sceneForModel,
               target,
               "ar"
             );
@@ -1040,14 +1170,15 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
             };
 
             patchRuntimeStatus({
-              activeSceneId: activeSceneForRuntime.id,
-              activeSceneName: activeSceneForRuntime.name,
-              modelUrl: activeSceneForRuntime.modelUrl,
-              modelPathname: activeSceneForRuntime.modelPathname,
+              activeSceneId: sceneForModel.id,
+              activeSceneName: sceneForModel.name,
+              modelUrl: sceneForModel.modelUrl,
+              modelPathname: sceneForModel.modelPathname,
               modelLoading: false,
               modelLoaded: true,
               modelError: "",
               modelAttachedToTarget: true,
+              modelAttachmentMode,
               canonicalPlacement: runtimeTransform.appPlacement,
               desktopViewportTransform: transformDebugFromRuntime(runtimeTransform.editorAppliedTransform),
               editorAppliedTransform: transformDebugFromRuntime(runtimeTransform.editorAppliedTransform),
@@ -1109,8 +1240,10 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
               modelCorrectionGroup,
               scaleRoot,
               target,
+              targetMode: activeTargetMode,
               activeModel,
               activeCorrectionMetrics,
+              renderingDebug,
               targetVisible,
               stabilityMode: stabilityModeRef.current,
               selectedTrackingMode: trackingModeRef.current,
@@ -1127,11 +1260,30 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
               setLiveDebugSnapshot(snapshot);
             }
             const stabilityDebug = snapshot.stability as Record<string, unknown>;
+            const providerDebug = snapshot.providerDebugState as Record<string, unknown> | null;
             patchRuntimeStatus({
               lastKnownGoodSheetPoseAgeMs:
                 typeof stabilityDebug.lastKnownGoodPoseAgeMs === "number"
                   ? stabilityDebug.lastKnownGoodPoseAgeMs
-                  : 0
+                  : 0,
+              markerFoundCounts:
+                readRecordFromDebug(providerDebug, "targetFoundCountByMarker") ||
+                emptyMarkerCounts(target),
+              markerLostCounts:
+                readRecordFromDebug(providerDebug, "targetLostCountByMarker") ||
+                emptyMarkerCounts(target),
+              markerTargetCount:
+                readNumberFromDebug(providerDebug, "targetCountInMind") ||
+                target.markerSheet.markers.length,
+              maxTrack:
+                readNumberFromDebug(providerDebug, "maxTrack") ||
+                target.markerSheet.maxTrack,
+              lastDetectedMarkerId:
+                readStringFromDebug(providerDebug, "lastDetectedMarkerId") || "",
+              lastDetectedTargetIndex:
+                readNumberFromDebug(providerDebug, "lastDetectedTargetIndex") ??
+                -1,
+              rendering: renderingDebug
             });
             lastDebugSnapshotAtMs = now;
           }
@@ -1159,7 +1311,18 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         };
 
         animate();
-        void loadActiveModel();
+        if (shouldAttachModel) {
+          void loadActiveModel();
+        } else {
+          patchRuntimeStatus({
+            modelLoading: false,
+            modelLoaded: false,
+            modelError: "",
+            modelAttachedToTarget: false,
+            modelAttachmentMode
+          });
+          updatePublicStatus("target searching");
+        }
       } catch (caught) {
         const errorMessage = caught instanceof Error ? caught.message : "Tracking provider init failed";
         fail(errorMessage.includes("Permission") ? "camera denied" : errorMessage, "mindar");
@@ -1202,7 +1365,7 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
       cleanupRef.current?.();
       cleanupRef.current = null;
     };
-  }, [project, runtimeResetKey, patchRuntimeStatus]);
+  }, [project, runtimeResetKey, targetMode, patchRuntimeStatus]);
 
   const showFallbackViewer = publicStatus === "model error" && Boolean(project?.viewUrl);
 
@@ -1217,6 +1380,21 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
           </span>
         </p>
         <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
+          <label className="flex items-center gap-1.5 rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold backdrop-blur">
+            <span>Mode:</span>
+            <select
+              aria-label="AR target mode"
+              className="max-w-[12rem] rounded bg-white px-1.5 py-1 text-xs font-semibold text-black"
+              value={targetMode}
+              onChange={handleTargetModeChange}
+            >
+              {AR_TARGET_MODES.map((mode) => (
+                <option key={mode} value={mode}>
+                  {TARGET_MODE_LABELS[mode]}
+                </option>
+              ))}
+            </select>
+          </label>
           {advancedControlsVisible ? (
             <>
               <label className="flex items-center gap-1.5 rounded bg-black/60 px-2.5 py-1.5 text-xs font-semibold backdrop-blur">
@@ -1277,6 +1455,21 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
         </div>
       </div>
 
+      {isMarkerDetectionTestMode(targetMode) ? (
+        <div className="pointer-events-none fixed inset-x-0 top-16 z-10 flex justify-center px-3">
+          <div className="max-w-[calc(100vw-1.5rem)] rounded bg-black/75 px-4 py-3 text-center text-white backdrop-blur">
+            <p className="text-sm font-black tracking-[0.08em]">
+              {runtimeStatus.targetFound ? "MARKER FOUND" : "NO MARKER DETECTED"}
+            </p>
+            <p className="mt-1 text-xs font-semibold text-white/80">
+              {runtimeStatus.targetFound
+                ? `${runtimeStatus.activeMarkerId || "marker"} / targetIndex ${runtimeStatus.targetIndex}`
+                : `Loaded ${runtimeStatus.imageTargetSrc || "target"} with ${runtimeStatus.markerTargetCount || 0} targets`}
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       {showFallbackViewer ? (
         <div className="fixed inset-x-0 bottom-0 z-10 p-3">
           <Link
@@ -1311,6 +1504,8 @@ export function ARClient({ id, debug = false }: { id: string; debug?: boolean })
               {
                 selectedTrackingMode: TRACKING_MODE_LABELS[trackingMode],
                 selectedTrackingModeKey: trackingMode,
+                trackingTargetMode: TARGET_MODE_LABELS[targetMode],
+                trackingTargetModeKey: targetMode,
                 trackingSupport,
                 stabilityMode: getStabilityConfig(stabilityMode).label,
                 stabilityModeKey: stabilityMode,
@@ -1511,24 +1706,33 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
   private postMatrixByTargetIndex = new Map<number, THREE.Matrix4>();
   private markerLocalSheetMatrixByTargetIndex = new Map<number, THREE.Matrix4>();
   private visibleMarkerPoses = new Map<number, VisibleMarkerPose>();
+  private visibleTargetIndices = new Set<number>();
+  private targetFoundCountByMarker = new Map<string, number>();
+  private targetLostCountByMarker = new Map<string, number>();
   private lastTargetDimensions: Array<[number, number]> = [];
   private lastSheetPoseDebug: Record<string, unknown> | null = null;
+  private targetMode: ARTargetMode = DEFAULT_TARGET_MODE;
+  private maxTrack = 1;
+  private lastDetectedMarkerId = "";
+  private lastDetectedTargetIndex = -1;
 
   async isSupported(): Promise<TrackingProviderSupport> {
     return DEFAULT_TRACKING_SUPPORT["mindar-image"];
   }
 
-  async init({ video, target }: TrackingProviderContext) {
+  async init({ video, target, targetMode }: TrackingProviderContext) {
     this.video = video;
     this.target = target;
+    this.targetMode = targetMode;
     this.status = "loading MindAR runtime";
+    this.maxTrack = Math.max(1, Math.min(target.markerSheet.maxTrack, target.markerSheet.markers.length));
 
     const mindarModule = await loadMindARImageRuntime();
     const ControllerClass = mindarModule.Controller;
     this.controller = new ControllerClass({
       inputWidth: video.videoWidth,
       inputHeight: video.videoHeight,
-      maxTrack: Math.max(1, Math.min(target.markerSheet.maxTrack, target.markerSheet.markers.length)),
+      maxTrack: this.maxTrack,
       warmupTolerance: 3,
       missTolerance: 8,
       filterMinCF: null,
@@ -1543,9 +1747,16 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
     this.postMatrixByTargetIndex.clear();
     this.markerLocalSheetMatrixByTargetIndex.clear();
     this.visibleMarkerPoses.clear();
+    this.visibleTargetIndices.clear();
+    this.targetFoundCountByMarker.clear();
+    this.targetLostCountByMarker.clear();
+    this.lastDetectedMarkerId = "";
+    this.lastDetectedTargetIndex = -1;
 
     const markerFallbackDimensions: [number, number] = [1, 1];
     for (const marker of target.markerSheet.markers) {
+      this.targetFoundCountByMarker.set(marker.id, 0);
+      this.targetLostCountByMarker.set(marker.id, 0);
       const targetDimensions = dimensions[marker.targetIndex] || markerFallbackDimensions;
       this.markerByTargetIndex.set(marker.targetIndex, marker);
       this.postMatrixByTargetIndex.set(
@@ -1589,6 +1800,9 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
     this.postMatrixByTargetIndex.clear();
     this.markerLocalSheetMatrixByTargetIndex.clear();
     this.visibleMarkerPoses.clear();
+    this.visibleTargetIndices.clear();
+    this.targetFoundCountByMarker.clear();
+    this.targetLostCountByMarker.clear();
     this.initialized = false;
     this.targetVisible = false;
     this.visibleMarkerCount = 0;
@@ -1615,13 +1829,15 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
       inputHeight: this.controller?.inputHeight || 0,
       targetMindUrl: this.target?.mindUrl || "",
       targetImageUrl: this.target?.imageUrl || "",
+      trackingTargetMode: this.targetMode,
+      trackingTargetModeLabel: TARGET_MODE_LABELS[this.targetMode],
       trackingSheet: this.target
         ? {
             sheetId: this.target.markerSheet.sheetId,
             version: this.target.markerSheet.version,
             format: this.target.markerSheet.format,
             markerCount: this.target.markerSheet.markers.length,
-            maxTrack: this.target.markerSheet.maxTrack,
+            maxTrack: this.maxTrack,
             manifestUrl: this.target.markerSheet.manifestUrl
           }
         : null,
@@ -1634,6 +1850,15 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
         : null,
       visibleMarkerCount: this.visibleMarkerCount,
       poseSource: this.poseSource,
+      markerDetectionTestModeActive: isMarkerDetectionTestMode(this.targetMode),
+      sheetPoseReconstructionActive: isSheetPoseMode(this.targetMode),
+      targetCountInMind: this.lastTargetDimensions.length,
+      targetCountInManifest: this.target?.markerSheet.markers.length || 0,
+      maxTrack: this.maxTrack,
+      lastDetectedMarkerId: this.lastDetectedMarkerId,
+      lastDetectedTargetIndex: this.lastDetectedTargetIndex,
+      targetFoundCountByMarker: this.countsByMarker(this.targetFoundCountByMarker),
+      targetLostCountByMarker: this.countsByMarker(this.targetLostCountByMarker),
       lastSheetPose: this.lastSheetPoseDebug,
       targetPixelSize: this.target ? targetPixelSizeDebug(this.target) : null,
       targetPhysicalSize: this.target ? targetSizeDebug(this.target) : null,
@@ -1649,8 +1874,7 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
     if (data.type !== "updateMatrix" || typeof data.targetIndex !== "number") return;
     const marker = this.markerByTargetIndex.get(data.targetIndex);
     const postMatrix = this.postMatrixByTargetIndex.get(data.targetIndex);
-    const markerLocalSheetMatrix = this.markerLocalSheetMatrixByTargetIndex.get(data.targetIndex);
-    if (!marker || !postMatrix || !markerLocalSheetMatrix) return;
+    if (!marker || !postMatrix) return;
     const now = performance.now();
 
     if (data.worldMatrix) {
@@ -1658,15 +1882,53 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
       markerMatrix.fromArray(data.worldMatrix);
       markerMatrix.multiply(postMatrix);
       if (!isUsableMatrix(markerMatrix)) return;
+      this.markTargetVisible(marker, now);
+
+      const targetDimensions =
+        this.lastTargetDimensions[data.targetIndex] ||
+        ([1, 1] as [number, number]);
+
+      if (isMarkerDetectionTestMode(this.targetMode)) {
+        this.visibleMarkerPoses.set(data.targetIndex, {
+          marker,
+          markerMatrix,
+          sheetMatrix: markerMatrix.clone(),
+          updatedAtMs: now,
+          targetDimensions
+        });
+        this.pruneStaleMarkerPoses(now);
+        this.visibleMarkerCount = Math.max(this.visibleTargetIndices.size, this.visibleMarkerPoses.size);
+        this.emitFound(now);
+        this.lastSheetPoseDebug = {
+          detectionTestMode: true,
+          activeMarkerId: marker.id,
+          activeTargetIndex: marker.targetIndex,
+          activeMarkerRole: marker.role,
+          visibleMarkerCount: this.visibleMarkerCount,
+          poseSource: "marker-detection-test",
+          markerTransform: transformDebugFromMatrix(markerMatrix),
+          markerSheetPosition: markerSheetPositionDebug(marker, this.target)
+        };
+        this.emitPose({
+          matrix: markerMatrix,
+          timestampMs: now,
+          targetIndex: marker.targetIndex,
+          markerId: marker.id,
+          markerRole: marker.role,
+          visibleMarkerCount: this.visibleMarkerCount,
+          poseSource: "marker-detection-test"
+        });
+        return;
+      }
+
+      const markerLocalSheetMatrix = this.markerLocalSheetMatrixByTargetIndex.get(data.targetIndex);
+      if (!markerLocalSheetMatrix) return;
 
       const sheetMatrix = markerMatrix.clone().multiply(
         markerLocalSheetMatrix.clone().invert()
       );
       if (!isUsableMatrix(sheetMatrix)) return;
 
-      const targetDimensions =
-        this.lastTargetDimensions[data.targetIndex] ||
-        ([1, 1] as [number, number]);
       this.visibleMarkerPoses.set(data.targetIndex, {
         marker,
         markerMatrix,
@@ -1702,9 +1964,10 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
     }
 
     this.visibleMarkerPoses.delete(data.targetIndex);
+    this.markTargetLost(data.targetIndex, now);
     this.pruneStaleMarkerPoses(now);
-    this.visibleMarkerCount = this.visibleMarkerPoses.size;
-    if (this.visibleMarkerPoses.size === 0) {
+    this.visibleMarkerCount = Math.max(this.visibleTargetIndices.size, this.visibleMarkerPoses.size);
+    if (this.visibleMarkerCount === 0) {
       this.emitLost(now);
     }
   }
@@ -1714,6 +1977,7 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
     for (const [targetIndex, pose] of this.visibleMarkerPoses) {
       if (now - pose.updatedAtMs > staleAfterMs) {
         this.visibleMarkerPoses.delete(targetIndex);
+        this.markTargetLost(targetIndex, now);
       }
     }
   }
@@ -1741,6 +2005,39 @@ class MindARImageTrackingProvider extends BaseTrackingProvider {
       visibleMarkerCount: poses.length,
       poseSource: "fused-markers" as const
     };
+  }
+
+  private markTargetVisible(marker: MarkerSheetMarker, now: number) {
+    if (!this.visibleTargetIndices.has(marker.targetIndex)) {
+      this.visibleTargetIndices.add(marker.targetIndex);
+      this.targetFoundCountByMarker.set(
+        marker.id,
+        (this.targetFoundCountByMarker.get(marker.id) || 0) + 1
+      );
+    }
+
+    this.visibleMarkerCount = this.visibleTargetIndices.size;
+    this.lastDetectedMarkerId = marker.id;
+    this.lastDetectedTargetIndex = marker.targetIndex;
+    this.lastFoundAtMs = now;
+  }
+
+  private markTargetLost(targetIndex: number, now: number) {
+    if (!this.visibleTargetIndices.delete(targetIndex)) return;
+    const marker = this.markerByTargetIndex.get(targetIndex);
+    if (marker) {
+      this.targetLostCountByMarker.set(
+        marker.id,
+        (this.targetLostCountByMarker.get(marker.id) || 0) + 1
+      );
+    }
+    this.visibleMarkerCount = this.visibleTargetIndices.size;
+    this.lastLostAtMs = now;
+  }
+
+  private countsByMarker(counts: Map<string, number>) {
+    const markers = this.target?.markerSheet.markers || [];
+    return Object.fromEntries(markers.map((marker) => [marker.id, counts.get(marker.id) || 0]));
   }
 }
 
@@ -1968,6 +2265,16 @@ function parseTrackingMode(value: string | null): ARTrackingMode | null {
     : null;
 }
 
+function parseTargetMode(value: string | null): ARTargetMode | null {
+  if (!value) return null;
+  if (value === "a0-test" || value === "multi-marker-test") return "multi-marker-a0-test";
+  if (value === "a0-sheet" || value === "sheet-pose") return "multi-marker-a0-sheet-pose";
+  if (value === "legacy" || value === "single-target") return "single-target-legacy";
+  return AR_TARGET_MODES.includes(value as ARTargetMode)
+    ? (value as ARTargetMode)
+    : null;
+}
+
 function readInitialStabilityMode(): ARStabilityMode {
   if (typeof window === "undefined") return DEFAULT_STABILITY_MODE;
 
@@ -1988,8 +2295,117 @@ function readInitialTrackingMode(): ARTrackingMode {
   }
 }
 
+function readInitialTargetMode(): ARTargetMode {
+  if (typeof window === "undefined") return DEFAULT_TARGET_MODE;
+
+  try {
+    const queryMode = parseTargetMode(new URLSearchParams(window.location.search).get("targetMode"));
+    if (queryMode) return queryMode;
+    return parseTargetMode(window.localStorage.getItem(AR_TARGET_MODE_STORAGE_KEY)) || DEFAULT_TARGET_MODE;
+  } catch {
+    return DEFAULT_TARGET_MODE;
+  }
+}
+
 function getStabilityConfig(mode: ARStabilityMode) {
   return AR_STABILITY_CONFIGS[mode] || AR_STABILITY_CONFIGS[DEFAULT_STABILITY_MODE];
+}
+
+function createRuntimeTarget(target: ImageTargetSettings, targetMode: ARTargetMode): ImageTargetSettings {
+  if (targetMode === "single-target-legacy") {
+    return createLegacyMasterplanTarget(target);
+  }
+
+  return {
+    ...target,
+    markerSheet: {
+      ...target.markerSheet,
+      maxTrack: 1,
+      markers: [...target.markerSheet.markers].sort((a, b) => a.targetIndex - b.targetIndex)
+    }
+  };
+}
+
+function shouldAttachModelForTargetMode(targetMode: ARTargetMode) {
+  return targetMode !== "multi-marker-a0-test";
+}
+
+function isMarkerDetectionTestMode(targetMode: ARTargetMode) {
+  return targetMode === "multi-marker-a0-test";
+}
+
+function isSheetPoseMode(targetMode: ARTargetMode) {
+  return targetMode === "multi-marker-a0-sheet-pose";
+}
+
+function getModelAttachmentMode(targetMode: ARTargetMode) {
+  if (targetMode === "multi-marker-a0-test") return "none";
+  if (targetMode === "multi-marker-a0-sheet-pose") return "sheet pose";
+  return "marker pose";
+}
+
+function emptyMarkerCounts(target: ImageTargetSettings) {
+  return Object.fromEntries(target.markerSheet.markers.map((marker) => [marker.id, 0]));
+}
+
+function configureARRenderer(renderer: THREE.WebGLRenderer, renderingMode: ARRenderingMode): RenderingDebugState {
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  renderer.shadowMap.enabled = false;
+
+  return {
+    ...INITIAL_RENDERING_DEBUG,
+    renderingMode,
+    shadowMapEnabled: renderer.shadowMap.enabled,
+    toneMapping: toneMappingName(renderer.toneMapping),
+    exposure: roundForDebug(renderer.toneMappingExposure),
+    colorSpace: renderer.outputColorSpace
+  };
+}
+
+function configureARRenderingLights(root: THREE.Object3D, renderingMode: ARRenderingMode) {
+  if (renderingMode === "preview-parity") return 0;
+
+  if (renderingMode === "simple-top-light") {
+    const light = new THREE.DirectionalLight(0xffffff, 2);
+    light.position.set(0, 1, 0.35);
+    root.add(light);
+    return 1;
+  }
+
+  root.add(new THREE.AmbientLight(0xffffff, 2));
+  const hemisphere = new THREE.HemisphereLight(0xffffff, 0xd7dee8, 3);
+  root.add(hemisphere);
+  const directional = new THREE.DirectionalLight(0xffffff, 3);
+  directional.position.set(0.6, 1.4, 0.8);
+  root.add(directional);
+  return 3;
+}
+
+function toneMappingName(value: THREE.ToneMapping) {
+  if (value === THREE.NoToneMapping) return "NoToneMapping";
+  if (value === THREE.LinearToneMapping) return "LinearToneMapping";
+  if (value === THREE.ReinhardToneMapping) return "ReinhardToneMapping";
+  if (value === THREE.CineonToneMapping) return "CineonToneMapping";
+  if (value === THREE.ACESFilmicToneMapping) return "ACESFilmicToneMapping";
+  return String(value);
+}
+
+function readRecordFromDebug(debug: Record<string, unknown> | null | undefined, key: string) {
+  const value = debug?.[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, number>;
+}
+
+function readNumberFromDebug(debug: Record<string, unknown> | null | undefined, key: string) {
+  const value = debug?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readStringFromDebug(debug: Record<string, unknown> | null | undefined, key: string) {
+  const value = debug?.[key];
+  return typeof value === "string" ? value : "";
 }
 
 function applyRendererPixelRatio(renderer: THREE.WebGLRenderer, mode: ARStabilityMode) {
@@ -3093,8 +3509,10 @@ function buildLiveDebugSnapshot({
   modelCorrectionGroup,
   scaleRoot,
   target,
+  targetMode,
   activeModel,
   activeCorrectionMetrics,
+  renderingDebug,
   targetVisible,
   stabilityMode,
   selectedTrackingMode,
@@ -3115,8 +3533,10 @@ function buildLiveDebugSnapshot({
   modelCorrectionGroup: THREE.Group;
   scaleRoot: THREE.Group;
   target: ImageTargetSettings;
+  targetMode: ARTargetMode;
   activeModel: THREE.Object3D | null;
   activeCorrectionMetrics: ModelCorrectionMetrics | null;
+  renderingDebug: RenderingDebugState;
   targetVisible: boolean;
   stabilityMode: ARStabilityMode;
   selectedTrackingMode: ARTrackingMode;
@@ -3140,6 +3560,8 @@ function buildLiveDebugSnapshot({
     trackingMode: trackingProvider?.label || "",
     selectedTrackingMode,
     selectedTrackingModeLabel: TRACKING_MODE_LABELS[selectedTrackingMode],
+    trackingTargetMode: targetMode,
+    trackingTargetModeLabel: TARGET_MODE_LABELS[targetMode],
     activeTrackingProvider: trackingProvider?.id || "",
     activeTrackingProviderLabel: trackingProvider?.label || "",
     activeTarget: targetDebug(target),
@@ -3147,12 +3569,16 @@ function buildLiveDebugSnapshot({
     providerDebugState: trackingProvider?.getDebugState() || null,
     mindARStatus: trackingProvider?.id === "mindar-image" ? trackingProvider.getDebugState() : null,
     multiMarkerModeActive: target.markerSheet.markers.length > 1,
+    markerDetectionTestModeActive: isMarkerDetectionTestMode(targetMode),
+    sheetPoseReconstructionActive: isSheetPoseMode(targetMode),
     activeSheet: {
       sheetId: target.markerSheet.sheetId,
       version: target.markerSheet.version,
       format: target.markerSheet.format,
       orientation: target.markerSheet.orientation,
       markerCount: target.markerSheet.markers.length,
+      maxTrack: target.markerSheet.maxTrack,
+      mindUrl: target.mindUrl,
       manifestUrl: target.markerSheet.manifestUrl
     },
     activeMarker: providerState
@@ -3164,6 +3590,13 @@ function buildLiveDebugSnapshot({
           poseSource: providerState.poseSource
         }
       : null,
+    markerFoundCounts:
+      readRecordFromDebug(trackingProvider?.getDebugState(), "targetFoundCountByMarker") ||
+      emptyMarkerCounts(target),
+    markerLostCounts:
+      readRecordFromDebug(trackingProvider?.getDebugState(), "targetLostCountByMarker") ||
+      emptyMarkerCounts(target),
+    markerTargetCountInMind: readNumberFromDebug(trackingProvider?.getDebugState(), "targetCountInMind"),
     webXRSupportCheck: trackingSupport["webxr-world"],
     deviceProfile,
     stabilityMode: stabilityConfig.label,
@@ -3172,6 +3605,7 @@ function buildLiveDebugSnapshot({
     frameTimeEstimateMs: frameDebug.frameTimeEstimateMs,
     targetVisible,
     rendererPixelRatio: roundForDebug(renderer.getPixelRatio()),
+    rendering: renderingDebug,
     viewport,
     viewportSize: {
       width: viewport.width,
@@ -3225,19 +3659,7 @@ function forceVisibleModel(root: THREE.Object3D) {
 
     if (!(child instanceof THREE.Mesh)) return;
 
-    child.castShadow = true;
-    child.receiveShadow = true;
     child.frustumCulled = false;
-
-    const materials = Array.isArray(child.material) ? child.material : [child.material];
-    materials.forEach((material) => {
-      material.visible = true;
-      if (!Number.isFinite(material.opacity) || material.opacity <= 0) {
-        material.opacity = 1;
-        material.transparent = false;
-      }
-      material.needsUpdate = true;
-    });
   });
 }
 

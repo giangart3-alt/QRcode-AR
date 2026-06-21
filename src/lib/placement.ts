@@ -14,6 +14,11 @@ export const LEGACY_MASTERPLAN_TARGET_IMAGE_URL = "/targets/masterplan-marker-fr
 export const LEGACY_MASTERPLAN_TARGET_PREVIEW_URL = "/targets/masterplan-marker-frame.png";
 export const LEGACY_MASTERPLAN_TARGET_MIND_URL = "/targets/masterplan-marker-frame.mind";
 export const LEGACY_MASTERPLAN_TARGET_VERSION = "marker-frame-masterplan-v1";
+export const LEGACY_MASTERPLAN_TARGET_PIXEL_WIDTH = 2048;
+export const LEGACY_MASTERPLAN_TARGET_PIXEL_HEIGHT = 1700;
+export const LEGACY_MASTERPLAN_TARGET_WIDTH_MM = 841;
+export const LEGACY_MASTERPLAN_TARGET_HEIGHT_MM = 698;
+export const LEGACY_MASTERPLAN_TARGET_MANIFEST_URL = "/targets/legacy-masterplan-target-manifest.json";
 
 export const MASTERPLAN_TARGET_VERSION = MARKER_SHEET_A0_TARGET_VERSION;
 export const MASTERPLAN_TARGET_IMAGE_URL = MARKER_SHEET_A0_IMAGE_URL;
@@ -231,7 +236,7 @@ export const MARKER_SHEET_A0: MarkerSheetSettings = {
   format: "A0",
   orientation: "landscape",
   manifestUrl: MARKER_SHEET_A0_MANIFEST_URL,
-  maxTrack: 2,
+  maxTrack: 1,
   contentArea: {
     x: 0.18,
     y: 0.17,
@@ -239,6 +244,38 @@ export const MARKER_SHEET_A0: MarkerSheetSettings = {
     height: 0.66
   },
   markers: MARKER_SHEET_A0_MARKERS
+};
+
+export const LEGACY_MASTERPLAN_MARKER_SHEET: MarkerSheetSettings = {
+  sheetId: "legacy-masterplan-single-target",
+  version: LEGACY_MASTERPLAN_TARGET_VERSION,
+  format: "A0",
+  orientation: "landscape",
+  manifestUrl: LEGACY_MASTERPLAN_TARGET_MANIFEST_URL,
+  maxTrack: 1,
+  contentArea: {
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1
+  },
+  markers: [
+    {
+      id: "Legacy_Masterplan",
+      targetIndex: 0,
+      assetPng: "masterplan-marker-frame.png",
+      assetSvg: "",
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      widthMm: LEGACY_MASTERPLAN_TARGET_WIDTH_MM,
+      heightMm: LEGACY_MASTERPLAN_TARGET_HEIGHT_MM,
+      rotationDeg: 0,
+      role: "legacy-single-target",
+      pattern: "legacy-masterplan-frame"
+    }
+  ]
 };
 
 export type ImageTargetGeometry = {
@@ -298,6 +335,32 @@ export function createDefaultTarget(input?: Partial<ImageTargetSettings>): Image
       units: "millimeters"
     },
     markerSheet
+  };
+}
+
+export function createLegacyMasterplanTarget(
+  input?: Partial<ImageTargetSettings>
+): ImageTargetSettings {
+  return {
+    trackingMode: "mindar-image",
+    targetIndex: 0,
+    targetVersion: LEGACY_MASTERPLAN_TARGET_VERSION,
+    imageUrl: LEGACY_MASTERPLAN_TARGET_IMAGE_URL,
+    previewUrl: LEGACY_MASTERPLAN_TARGET_PREVIEW_URL,
+    mindUrl: LEGACY_MASTERPLAN_TARGET_MIND_URL,
+    pixelWidth: LEGACY_MASTERPLAN_TARGET_PIXEL_WIDTH,
+    pixelHeight: LEGACY_MASTERPLAN_TARGET_PIXEL_HEIGHT,
+    widthMm: LEGACY_MASTERPLAN_TARGET_WIDTH_MM,
+    heightMm: LEGACY_MASTERPLAN_TARGET_HEIGHT_MM,
+    correctionMode: normalizeCorrectionMode(input?.correctionMode),
+    coordinateSystem: {
+      origin: "center of the legacy single MindAR target",
+      xAxis: "right on the printed target",
+      yAxis: "up on the printed target",
+      zAxis: "normal above the printed target",
+      units: "millimeters"
+    },
+    markerSheet: LEGACY_MASTERPLAN_MARKER_SHEET
   };
 }
 

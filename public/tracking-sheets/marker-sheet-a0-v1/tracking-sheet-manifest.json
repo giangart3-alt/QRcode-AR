@@ -7,6 +7,7 @@
   "mindUrl": "marker-sheet-a0-v1.mind",
   "previewPng": "layout-preview-a0.png",
   "previewSvg": "layout-preview-a0.svg",
+  "maxTrack": 1,
   "physicalSize": {
     "widthMm": 1189,
     "heightMm": 841
@@ -145,5 +146,15 @@
       "role": "bottom-right",
       "pattern": "quadrant-cutout"
     }
+  ],
+  "mindCompileOrder": [
+    "markers/M00_TopLeft.png",
+    "markers/M01_Top.png",
+    "markers/M02_TopRight.png",
+    "markers/M03_Left.png",
+    "markers/M04_Right.png",
+    "markers/M05_BottomLeft.png",
+    "markers/M06_Bottom.png",
+    "markers/M07_BottomRight.png"
   ]
 }

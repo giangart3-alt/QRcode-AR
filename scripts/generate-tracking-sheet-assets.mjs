@@ -1,6 +1,8 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import sharp from "sharp";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -9,6 +11,7 @@ const sheetId = "marker-sheet-a0-v1";
 const version = "1.0.0";
 const outputRoot = path.join(projectRoot, "public", "tracking-sheets", sheetId);
 const markersRoot = path.join(outputRoot, "markers");
+const mindFilePath = path.join(outputRoot, `${sheetId}.mind`);
 
 const sheet = {
   id: sheetId,
@@ -285,6 +288,7 @@ function manifest() {
     mindUrl: `${sheetId}.mind`,
     previewPng: "layout-preview-a0.png",
     previewSvg: "layout-preview-a0.svg",
+    maxTrack: 1,
     physicalSize: {
       widthMm: sheet.widthMm,
       heightMm: sheet.heightMm,
@@ -317,6 +321,10 @@ function manifest() {
       role: marker.role,
       pattern: marker.pattern,
     })),
+    mindCompileOrder: markers
+      .slice()
+      .sort((a, b) => a.targetIndex - b.targetIndex)
+      .map((marker) => marker.assetPng),
   };
 }
 
@@ -328,16 +336,126 @@ This is the active multi-marker tracking sheet for QRcode-AR.
 - Format: A0 landscape, ${sheet.widthMm} x ${sheet.heightMm} mm
 - Runtime target file: \`${sheetId}.mind\`
 - Manifest: \`tracking-sheet-manifest.json\`
+- Verification report: \`tracking-sheet-report.json\`
 - Target order: \`markers/*.png\` sorted by \`targetIndex\`
 
 The full sheet is not a single image target. Each marker is compiled as an
 individual MindAR target, and the app reconstructs the full A0 sheet pose from
 the detected marker's known sheet position.
+
+Run \`npm run generate:a0-marker-sheet\` after editing this generator. The
+command regenerates marker PNG/SVG files, manifest and preview assets, then
+verifies the committed \`.mind\` file has the expected target count and
+dimensions. Recompile \`${sheetId}.mind\` from the ordered marker PNGs whenever
+marker artwork changes.
 `;
 }
 
 async function writePngFromSvg(svg, filePath, width) {
   await sharp(Buffer.from(svg)).resize({ width }).png().toFile(filePath);
+}
+
+async function inspectMindFile() {
+  const require = createRequire(import.meta.url);
+  globalThis.require ||= require;
+  globalThis.window ||= {};
+
+  const mindarModule = await import(
+    pathToFileURL(path.join(projectRoot, "public", "vendor", "mind-ar", "mindar-image.prod.js")).href
+  );
+  const compiler = new mindarModule.Compiler();
+  const data = compiler.importData(await readFile(mindFilePath));
+
+  return data.map((target, targetIndex) => ({
+    targetIndex,
+    width: target.targetImage?.width || 0,
+    height: target.targetImage?.height || 0,
+  }));
+}
+
+async function markerAssetReport(marker) {
+  const pngPath = path.join(outputRoot, marker.assetPng);
+  const svgPath = path.join(outputRoot, marker.assetSvg);
+  const [pngBuffer, pngMetadata, svgStats] = await Promise.all([
+    readFile(pngPath),
+    sharp(pngPath).metadata(),
+    stat(svgPath),
+  ]);
+
+  return {
+    id: marker.id,
+    targetIndex: marker.targetIndex,
+    role: marker.role,
+    assetPng: marker.assetPng,
+    assetSvg: marker.assetSvg,
+    pngWidth: pngMetadata.width || 0,
+    pngHeight: pngMetadata.height || 0,
+    pngChannels: pngMetadata.channels || 0,
+    pngSha256: createHash("sha256").update(pngBuffer).digest("hex"),
+    svgBytes: svgStats.size,
+    sheetPosition: {
+      x: fixed(marker.x),
+      y: fixed(marker.y),
+      width: fixed(marker.width),
+      height: fixed(marker.height),
+      rotationDeg: marker.rotationDeg,
+    },
+  };
+}
+
+async function buildVerificationReport() {
+  const orderedMarkers = markers.slice().sort((a, b) => a.targetIndex - b.targetIndex);
+  const markerReports = await Promise.all(orderedMarkers.map(markerAssetReport));
+  const mindTargets = await inspectMindFile();
+  const manifestOrder = orderedMarkers.map((marker) => marker.assetPng);
+  const targetIndexOrderOk = orderedMarkers.every((marker, index) => marker.targetIndex === index);
+  const markerPngsAre1024Square = markerReports.every(
+    (marker) => marker.pngWidth === 1024 && marker.pngHeight === 1024
+  );
+  const mindTargetCountMatchesManifest = mindTargets.length === orderedMarkers.length;
+  const mindTargetDimensionsMatchMarkers = mindTargets.every((target, index) => {
+    const marker = markerReports[index];
+    return Boolean(marker) && target.width === marker.pngWidth && target.height === marker.pngHeight;
+  });
+  const ok =
+    targetIndexOrderOk &&
+    markerPngsAre1024Square &&
+    mindTargetCountMatchesManifest &&
+    mindTargetDimensionsMatchMarkers;
+
+  const report = {
+    generatedAt: new Date().toISOString(),
+    sheetId,
+    version,
+    format: sheet.format,
+    orientation: sheet.orientation,
+    physicalSize: {
+      widthMm: sheet.widthMm,
+      heightMm: sheet.heightMm,
+    },
+    maxTrack: 1,
+    manifestOrder,
+    checks: {
+      targetIndexOrderOk,
+      markerPngsAre1024Square,
+      mindTargetCountMatchesManifest,
+      mindTargetDimensionsMatchMarkers,
+      markerImagesMatchCompiledContent: "not encoded in MindAR export; use pngSha256 and compile order as source of truth",
+    },
+    mindFile: {
+      path: `${sheetId}.mind`,
+      targetCount: mindTargets.length,
+      targets: mindTargets,
+    },
+    markers: markerReports,
+    ok,
+  };
+
+  if (!ok) {
+    throw new Error(`A0 marker sheet verification failed: ${JSON.stringify(report.checks)}`);
+  }
+
+  return report;
 }
 
 async function main() {
@@ -359,10 +477,21 @@ async function main() {
     "utf8",
   );
   await writeFile(path.join(outputRoot, "README.md"), readme(), "utf8");
+  const report = await buildVerificationReport();
+  await writeFile(
+    path.join(outputRoot, "tracking-sheet-report.json"),
+    `${JSON.stringify(report, null, 2)}\n`,
+    "utf8",
+  );
 
   return {
     outputRoot,
     markerCount: markers.length,
+    mindTargetCount: report.mindFile.targetCount,
+    targetIndexOrderOk: report.checks.targetIndexOrderOk,
+    markerPngsAre1024Square: report.checks.markerPngsAre1024Square,
+    mindTargetCountMatchesManifest: report.checks.mindTargetCountMatchesManifest,
+    mindTargetDimensionsMatchMarkers: report.checks.mindTargetDimensionsMatchMarkers,
     preview: "A0",
   };
 }
